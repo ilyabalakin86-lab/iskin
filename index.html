@@ -7,6 +7,7 @@
 <title>ISKIN — пилот</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 <link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;700&family=Unbounded:wght@500&display=swap" rel="stylesheet">
 <style>
 :root{
@@ -23,6 +24,8 @@ html,body{margin:0;height:100%;overflow:hidden;background:var(--ink);color:var(-
   font-family:"Onest",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-tap-highlight-color:transparent}
 #app{position:relative;height:100%;width:100%}
 canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;display:block}
+#mapgl{position:absolute;inset:0;pointer-events:none;background:#1d2836}
+#mapgl .maplibregl-ctrl-bottom-right,#mapgl .maplibregl-ctrl-bottom-left{display:none}
 .top{position:absolute;left:0;right:0;top:0;display:flex;align-items:center;gap:10px;padding:12px 14px;pointer-events:none}
 .logo{font-family:"Unbounded","Onest",sans-serif;font-weight:500;font-size:18px;letter-spacing:.06em}
 .status{font-size:12px;color:var(--mute);background:var(--panel);padding:6px 10px;border-radius:14px;backdrop-filter:blur(6px);pointer-events:auto;max-width:60vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -128,6 +131,7 @@ canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;displa
 </head>
 <body>
 <div id="app">
+  <div id="mapgl" aria-hidden="true"></div>
   <canvas id="cv"></canvas>
 
   <div class="top">
@@ -599,6 +603,7 @@ async function buildField(){
 }
 /* Waze-like night map: flat land, darker sea, soft rounded roads, thin dashed paths, nothing written */
 function drawVector(){
+  if(gl.ready){ ctx.clearRect(0,0,W,H); return; }      // the vector-tile map underneath does the drawing
   ctx.fillStyle="#1d2836"; ctx.fillRect(0,0,W,H);
   if(!base) return;
   const z=cam.z;
@@ -812,7 +817,7 @@ function buildContours(){
 /* ---------- real map tiles ---------- */
 const LAYERS = {
   // keyless tile sources only
-  vector:{name:"Схема", attr:"© участники OpenStreetMap"},
+  vector:{name:"Схема", attr:"© OpenFreeMap © OpenMapTiles © участники OpenStreetMap"},
   topo:  {name:"Рельеф", max:17, dim:0.42, sub:"abc", url:"https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png", attr:"© OpenStreetMap, SRTM, © OpenTopoMap (CC-BY-SA)"},
   scheme:{name:"OSM",    max:19, dim:0.50, sub:"",    url:"https://tile.openstreetmap.org/{z}/{x}/{y}.png", attr:"© участники OpenStreetMap"},
   sat:   {name:"Спутник",max:18, dim:0.30, sub:"",    url:"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", attr:"Imagery © Esri, Maxar, Earthstar Geographics"},
@@ -870,6 +875,57 @@ function drawTiles(){
   drawTileLevel(layer, z, false);
   if(L.dim){ ctx.fillStyle=`rgba(22,32,45,${L.dim})`; ctx.fillRect(0,0,W,H); }
 }
+/* ---------- base map from vector tiles (OpenFreeMap + MapLibre), styled like a night navigator ---------- */
+const gl={map:null,ready:false,last:""};
+const NAV_STYLE={
+  version:8,
+  sources:{omt:{type:"vector",url:"https://tiles.openfreemap.org/planet"}},
+  layers:[
+    {id:"bg",type:"background",paint:{"background-color":"#1d2836"}},
+    {id:"water",type:"fill","source":"omt","source-layer":"water",paint:{"fill-color":"#132538"}},
+    {id:"paths",type:"line","source":"omt","source-layer":"transportation",
+     filter:["match",["get","class"],["path","track"],true,false],
+     layout:{"line-cap":"round","line-join":"round"},
+     paint:{"line-color":"rgba(120,140,165,.55)","line-width":["interpolate",["linear"],["zoom"],13,0.6,18,1.8],"line-dasharray":[1.5,2.5]}},
+    {id:"minor",type:"line","source":"omt","source-layer":"transportation",
+     filter:["match",["get","class"],["minor","service"],true,false],
+     layout:{"line-cap":"round","line-join":"round"},
+     paint:{"line-color":"#34485f","line-width":["interpolate",["exponential",1.6],["zoom"],12,1,15,4,18,14]}},
+    {id:"major",type:"line","source":"omt","source-layer":"transportation",
+     filter:["match",["get","class"],["motorway","trunk","primary","secondary","tertiary"],true,false],
+     layout:{"line-cap":"round","line-join":"round"},
+     paint:{"line-color":"#41597a","line-width":["interpolate",["exponential",1.6],["zoom"],10,1.5,15,6,18,18]}}
+  ]
+};
+function initGL(){
+  if(!window.maplibregl || gl.map) return;
+  try{
+    gl.map=new maplibregl.Map({container:"mapgl",style:NAV_STYLE,interactive:false,attributionControl:false,fadeDuration:0,center:[LON0,LAT0],zoom:15});
+    gl.map.on("load",()=>{ gl.ready=true; syncGL(true); });
+    gl.map.on("error",()=>{});
+  }catch(e){ gl.map=null; }
+}
+function syncGL(force){
+  if(!gl.map) return;
+  const show = layer==="vector" && mode==="map";
+  const el=$("mapgl"); if(el.style.display!==(show?"block":"none")) el.style.display=show?"block":"none";
+  if(!show) return;
+  // our camera: cam.z px per metre, cam centred at 45% of the height → MapLibre centre + zoom (512px tiles)
+  const c=toLL(cam.x, cam.y+(H*0.5-H*0.45)/cam.z);
+  const zoom=Math.log2(78271.517*Math.cos(c.lat*Math.PI/180)*cam.z);
+  const key=c.lat.toFixed(7)+","+c.lon.toFixed(7)+","+zoom.toFixed(3);
+  if(!force && key===gl.last) return;
+  gl.last=key;
+  gl.map.jumpTo({center:[c.lon,c.lat],zoom});
+}
+(function loadGL(){
+  const sc=document.createElement("script");
+  sc.src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js";
+  sc.onload=initGL; sc.onerror=()=>{};
+  document.head.appendChild(sc);
+})();
+window.addEventListener("resize",()=>{ if(gl.map) gl.map.resize(); });
+
 function applyLayer(){
   $("layerBtn").textContent = LAYERS[layer].name;
   $("attr").textContent = LAYERS[layer].attr || "";
@@ -1062,6 +1118,7 @@ function frame(now){
   const dt = Math.min(0.1,(now-lastT)/1000); lastT=now;
   simStep(dt);
   if(follow && player){ cam.x += (player.x-cam.x)*0.15; cam.y += (player.y-cam.y)*0.15; }
+  syncGL();
   ctx.setTransform(DPR,0,0,DPR,0,0);
   mode==="map" ? drawMap(now) : drawCompass(now);
   requestAnimationFrame(frame);
