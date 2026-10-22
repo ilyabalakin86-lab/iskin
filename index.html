@@ -182,6 +182,7 @@ canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;displa
       <h2>Маршрут</h2>
       <div class="row">
         <button class="btn" data-route="world">Открытый мир</button>
+        <button class="btn" data-route="lim">Лимассол, старый город</button>
         <button class="btn" data-route="blue">Синяя петля</button>
         <button class="btn" data-route="near">Петля вокруг меня</button>
         <button class="btn" id="gpxBtn">Загрузить GPX</button>
@@ -1931,11 +1932,39 @@ function worldDotsTick(){
   for(const [k,d] of wDots) if((d.x-player.x)**2+(d.y-player.y)**2>1500*1500) wDots.delete(k);
 }
 
+/* hand-placed portals at real places; around them the random grid portals step aside */
+const CURATED_AREAS=[
+  {id:"lim", name:"Лимассол, старый город", lat:34.6728, lon:33.0428, r:1300, portals:[
+    {id:"lim-castle",  lat:34.6722,  lon:33.0415,  exact:true, type:"battle", place:"Страж замка"},
+    {id:"lim-cathedral", lat:34.67352, lon:33.043988, exact:true, type:"riddle", place:"Собор Айя-Напа",
+      q:"Я выше всех крыш квартала и звоню без языка, пока меня не качнут. Кто я?", a:["колокол"], hint:"Посмотри на башню собора"},
+    {id:"lim-carob",   lat:34.6719,  lon:33.0429,  type:"riddle", place:"Старая рожковая мельница",
+      q:"Чёрное золото Кипра: из меня варят сироп и мелют муку. Что я?", a:["рожк","кароб","carob","цератони","харуп"], hint:"Это плод дерева, которое росло по всему острову"},
+    {id:"lim-port",    lat:34.6712,  lon:33.0447,  type:"riddle", place:"Старый порт",
+      q:"Корабли уходят, а я остаюсь их ждать. Что я?", a:["причал","пристан","порт","мол","гаван"], hint:"Стоишь прямо на нём"},
+    {id:"lim-market",  lat:34.6757,  lon:33.0431,  type:"riddle", place:"Старый рынок",
+      q:"Утром здесь шумно, к ночи пусто, а пахнет всегда апельсинами и рыбой. Что это?", a:["рын","агор","базар"], hint:"Сюда ходили за продуктами сто лет"}
+  ]}
+];
+function curatedNear(lat,lon,extra){
+  for(const A of CURATED_AREAS){ const d=Math.hypot((lat-A.lat)*110540,(lon-A.lon)*111320*Math.cos(lat*Math.PI/180)); if(d<A.r+(extra||0)) return A; }
+  return null;
+}
 /* portals on a ~1.1 km grid: same for everyone, visible through the fog */
 const PNAMES=["Врата у дороги","Страж перекрёстка","Тихий двор","Врата над морем","Старая давильня","Камень у тропы","Врата холма","Источник","Белая стена","Порог долины"];
 function worldPortals(){
   if(!isWorld()) return;
   const P = player ? toLL(player.x,player.y) : {lat:LAT0,lon:LON0};
+  const area = curatedNear(P.lat,P.lon,6000);
+  if(area) for(const c of area.portals){
+    if(golds.some(g=>g.wid===c.id)) continue;
+    const st=world.portals[c.id]||{}, lat=st.lat??c.lat, lon=st.lon??c.lon, q=toXY(lat,lon);
+    const rd = c.q ? c : GENERIC_RIDDLES[0];
+    const g={wid:c.id, lat, lon, x:q.x, y:q.y, type:c.type, place:c.place, q:rd.q, a:rd.a, hint:rd.hint,
+      solved:!!st.solved, found:!!st.found, branch:null, snapped: c.exact || !!st.snapped};
+    if(st.tlat!=null){ const t=toXY(st.tlat,st.tlon); g.tx=t.x; g.ty=t.y; }
+    golds.push(g); if(g.solved) makeBranch(g, golds.length-1);
+  }
   const S=1100, qa=qLat(P.lat,S), qo=qLon(P.lon,S);
   for(let i=-1;i<=1;i++) for(let j=-1;j<=1;j++){
     const A=qa+i, B=qo+j, id="p"+A+":"+B;
@@ -1943,6 +1972,7 @@ function worldPortals(){
     if(wHash(A,B,3)>0.6) continue;                              // some cells stay empty: ~3 portals around you
     const st=world.portals[id]||{};
     const lat = st.lat ?? (A+0.2+0.6*wHash(A,B,4))*S/111320, lon = st.lon ?? (B+0.2+0.6*wHash(A,B,5))*S/(111320*KCOS);
+    if(curatedNear(lat,lon,400)) continue;                      // hand-placed portals own this area
     const q=toXY(lat,lon), rd=GENERIC_RIDDLES[Math.floor(wHash(A,B,6)*GENERIC_RIDDLES.length)];
     const g={wid:id, lat, lon, x:q.x, y:q.y, type: wHash(A,B,13)<0.4 ? "battle" : "riddle",
       place: PNAMES[Math.floor(wHash(A,B,14)*PNAMES.length)], q:rd.q, a:rd.a, hint:rd.hint,
@@ -2045,6 +2075,11 @@ $("menuBtn").onclick = () => { updateRouteNote(); $("sheet").classList.add("open
 $("closeSheet").onclick = () => $("sheet").classList.remove("open");
 $("sheet").addEventListener("click", e=>{ if(e.target.id==="sheet") $("sheet").classList.remove("open"); });
 document.querySelectorAll("[data-route]").forEach(b=> b.onclick = () => {
+  if(b.dataset.route==="lim"){
+    // look at (or simulate) the old town from anywhere; real GPS in Limassol takes over by itself
+    setRoute(makeWorldRoute(34.6740, 33.0425)); buildContours(); toast("Старый город Лимассола: 5 порталов");
+    $("sheet").classList.remove("open"); cam.z=0.5; return;
+  }
   if(b.dataset.route==="world"){
     const go=(la,lo)=>{ setRoute(makeWorldRoute(la,lo)); buildContours(); toast("Открытый мир: иди, туман расходится"); };
     if(!navigator.geolocation) return go(W_HOME.lat,W_HOME.lon);
