@@ -450,45 +450,79 @@ function setRoute(r){
   buildField();
 }
 
-/* ---------- ambient field ----------
-   A sparse scatter of dots that follows the real place: streets and paths from OpenStreetMap
-   (Overpass API) and relief contours from open elevation tiles (Terrarium). Built once per route,
-   cached on the device, purely visual. Fails silently offline. */
+/* ---------- base map + ambient field ----------
+   One download per route, cached on the device:
+   - OpenStreetMap ways (Overpass API) -> our own Waze-style vector map (roads, paths, coastline) + pale street dots
+   - open elevation tiles (Terrarium) -> sea mask + teal dots along relief contours
+   No labels, no icons. Fails silently offline. */
 let field = [], fieldFor = null;
-const FIELD_KEY = "iskin.field.v1";
+let base = null;        // {roads:{main:Path2D,res:Path2D,svc:Path2D,path:Path2D,coast:Path2D}, sea:{canvas,x0,y0,step}}
+const FIELD_KEY = "iskin.base.v2";
+function roadClass(hw){
+  if(/^(motorway|trunk|primary|secondary|tertiary)(_link)?$/.test(hw)) return "main";
+  if(/^(residential|unclassified|living_street|road)$/.test(hw)) return "res";
+  if(/^(service|pedestrian)$/.test(hw)) return "svc";
+  if(/^(footway|path|track|steps|bridleway|cycleway)$/.test(hw)) return "path";
+  return null;
+}
+function makeBase(roads, sea){
+  const P={main:new Path2D(),res:new Path2D(),svc:new Path2D(),path:new Path2D(),coast:new Path2D()};
+  for(const [k,...xy] of roads){
+    const p=P[k]; if(!p) continue;
+    for(let i=0;i<xy.length;i+=2) i ? p.lineTo(xy[i],xy[i+1]) : p.moveTo(xy[i],xy[i+1]);
+  }
+  let s=null;
+  if(sea && sea.bits){
+    const c=document.createElement("canvas"); c.width=sea.cols; c.height=sea.rows;
+    const g=c.getContext("2d"), img=g.createImageData(sea.cols,sea.rows);
+    for(let i=0;i<sea.bits.length;i++){ if(sea.bits[i]==="1"){ const o=i*4; img.data[o]=18; img.data[o+1]=36; img.data[o+2]=58; img.data[o+3]=255; } }
+    g.putImageData(img,0,0);
+    s={canvas:c, x0:sea.x0, y0:sea.y0, step:sea.step};
+  }
+  return {roads:P, sea:s};
+}
 async function buildField(){
   const id = route.id+"|"+LAT0.toFixed(5)+","+LON0.toFixed(5);
   if(fieldFor===id) return;
-  fieldFor=id; field=[];
+  fieldFor=id; field=[]; base=null;
   const R = rng(4242);
   const cached = store.get(FIELD_KEY);
-  if(cached && cached.id===id && cached.d){ field = cached.d.map(([x,y,k])=>({x,y,k,ph:R()*6.283})); return; }
-  const xs=route.pts.map(p=>p.x), ys=route.pts.map(p=>p.y), M=500;
+  if(cached && cached.id===id){
+    if(cached.d) field = cached.d.map(([x,y,k])=>({x,y,k,ph:R()*6.283}));
+    if(cached.roads) base = makeBase(cached.roads, cached.sea);
+    return;
+  }
+  const xs=route.pts.map(p=>p.x), ys=route.pts.map(p=>p.y), M=700;
   const bb={minX:Math.min(...xs)-M, maxX:Math.max(...xs)+M, minY:Math.min(...ys)-M, maxY:Math.max(...ys)+M};
   const nw=toLL(bb.minX,bb.minY), se=toLL(bb.maxX,bb.maxY);
   // keep a clear band around the trail so the route's own Lyten stays readable
   const cell=25, near=new Set();
   samples.forEach(s=>{ const cx=Math.floor(s.x/cell), cy=Math.floor(s.y/cell); for(let i=-1;i<=1;i++) for(let j=-1;j<=1;j++) near.add((cx+i)+","+(cy+j)); });
   const nearRoute=(x,y)=>near.has(Math.floor(x/cell)+","+Math.floor(y/cell));
-  const out=[];
-  const [streets, relief] = await Promise.allSettled([
+  const [osm, relief] = await Promise.allSettled([
     (async()=>{
-      const q=`[out:json][timeout:25];way["highway"](${se.lat.toFixed(5)},${nw.lon.toFixed(5)},${nw.lat.toFixed(5)},${se.lon.toFixed(5)});out geom;`;
+      const box=`${se.lat.toFixed(5)},${nw.lon.toFixed(5)},${nw.lat.toFixed(5)},${se.lon.toFixed(5)}`;
+      const q=`[out:json][timeout:25];(way["highway"](${box});way["natural"="coastline"](${box}););out geom;`;
       const r=await fetch("https://overpass-api.de/api/interpreter",{method:"POST",body:"data="+encodeURIComponent(q)});
       if(!r.ok) throw new Error("overpass "+r.status);
-      const j=await r.json(), pts=[];
+      const j=await r.json(), pts=[], roads=[];
       for(const w of (j.elements||[])){
         if(!w.geometry || w.geometry.length<2) continue;
-        const hw=(w.tags&&w.tags.highway)||"", step=/footway|path|track|steps|bridleway/.test(hw)?17:24;
+        const tags=w.tags||{}, hw=tags.highway||"";
+        const k = tags.natural==="coastline" ? "coast" : roadClass(hw);
+        if(!k) continue;
+        const xy=[]; for(const g of w.geometry){ const q=toXY(g.lat,g.lon); xy.push(Math.round(q.x),Math.round(q.y)); }
+        roads.push([k,...xy]);
+        if(k==="coast") continue;
+        const step=k==="path"?17:24;
         let carry=R()*step;
-        for(let i=1;i<w.geometry.length;i++){
-          const a=toXY(w.geometry[i-1].lat,w.geometry[i-1].lon), b=toXY(w.geometry[i].lat,w.geometry[i].lon);
-          const L=Math.hypot(b.x-a.x,b.y-a.y); let d=carry;
-          while(d<L){ const t=d/L, x=a.x+(b.x-a.x)*t+(R()-.5)*3, y=a.y+(b.y-a.y)*t+(R()-.5)*3; if(!nearRoute(x,y)) pts.push([x,y,0]); d+=step*(0.7+R()*0.6); }
+        for(let i=2;i<xy.length;i+=2){
+          const ax=xy[i-2], ay=xy[i-1], bx=xy[i], by=xy[i+1], L=Math.hypot(bx-ax,by-ay); let d=carry;
+          while(d<L){ const t=d/L, x=ax+(bx-ax)*t+(R()-.5)*3, y=ay+(by-ay)*t+(R()-.5)*3; if(!nearRoute(x,y)) pts.push([x,y,0]); d+=step*(0.7+R()*0.6); }
           carry=d-L;
         }
       }
-      return pts;
+      return {pts, roads};
     })(),
     (async()=>{
       const z=14, tiles={};
@@ -516,17 +550,41 @@ async function buildField(){
         const cross=(e1!=null && Math.floor(e1/iv)!==c0) || (e2!=null && Math.floor(e2/iv)!==c0);
         if(cross && R()<0.42){ const px=x+(R()-.5)*step*0.6, py=y+(R()-.5)*step*0.6; if(!nearRoute(px,py)) pts.push([px,py,1]); }
       }
-      return pts;
+      // sea mask on a coarse grid
+      const ss=20, cols=Math.ceil((bb.maxX-bb.minX)/ss), rows=Math.ceil((bb.maxY-bb.minY)/ss);
+      let bits="";
+      for(let r=0;r<rows;r++) for(let c=0;c<cols;c++){ const e=elev(bb.minX+(c+.5)*ss, bb.minY+(r+.5)*ss); bits += (e!=null && e<1) ? "1" : "0"; }
+      return {pts, sea:{x0:Math.round(bb.minX), y0:Math.round(bb.minY), step:ss, cols, rows, bits}};
     })()
   ]);
   if(fieldFor!==id) return;   // the route changed while loading
-  if(streets.status==="fulfilled") out.push(...streets.value);
-  if(relief.status==="fulfilled") out.push(...relief.value);
-  // keep it sparse
-  const MAX=7000; let pts=out;
-  if(pts.length>MAX){ const k=MAX/pts.length; pts=pts.filter(()=>R()<k); }
-  field = pts.map(([x,y,k])=>({x,y,k,ph:R()*6.283}));
-  if(field.length) store.set(FIELD_KEY, {id, d:pts.map(([x,y,k])=>[Math.round(x),Math.round(y),k])});
+  let out=[], roads=null, sea=null;
+  if(osm.status==="fulfilled"){ out.push(...osm.value.pts); roads=osm.value.roads; }
+  if(relief.status==="fulfilled"){ out.push(...relief.value.pts); sea=relief.value.sea; }
+  const MAX=7000;   // keep the dots sparse
+  if(out.length>MAX){ const k=MAX/out.length; out=out.filter(()=>R()<k); }
+  field = out.map(([x,y,k])=>({x,y,k,ph:R()*6.283}));
+  if(roads || sea) base = makeBase(roads||[], sea);
+  if(field.length || roads) store.set(FIELD_KEY, {id, d:out.map(([x,y,k])=>[Math.round(x),Math.round(y),k]), roads, sea});
+}
+/* Waze-like night map: flat land, darker sea, soft rounded roads, thin dashed paths, nothing written */
+function drawVector(){
+  ctx.fillStyle="#1d2836"; ctx.fillRect(0,0,W,H);
+  if(!base) return;
+  const z=cam.z;
+  ctx.save();
+  ctx.setTransform(DPR*z,0,0,DPR*z, DPR*(W/2-cam.x*z), DPR*(H*0.45-cam.y*z));
+  if(base.sea){ ctx.imageSmoothingEnabled=true; const s=base.sea; ctx.drawImage(s.canvas, s.x0, s.y0, s.canvas.width*s.step, s.canvas.height*s.step); }
+  ctx.lineCap="round"; ctx.lineJoin="round";
+  const px = v => v/z;                                    // widths in screen pixels, independent of zoom
+  const zw = Math.max(0.55, Math.min(1.5, z*0.8));        // roads thin out when zoomed far out
+  const R=base.roads;
+  ctx.strokeStyle="#2f5878"; ctx.lineWidth=px(2.2); ctx.stroke(R.coast);
+  ctx.strokeStyle="#2c3b4e"; ctx.lineWidth=px(5*zw); ctx.stroke(R.svc);
+  ctx.strokeStyle="#34485f"; ctx.lineWidth=px(8*zw); ctx.stroke(R.res);
+  ctx.strokeStyle="#3f5874"; ctx.lineWidth=px(11*zw); ctx.stroke(R.main);
+  ctx.setLineDash([px(3),px(5)]); ctx.strokeStyle="rgba(120,140,165,.55)"; ctx.lineWidth=px(1.6); ctx.stroke(R.path); ctx.setLineDash([]);
+  ctx.restore();
 }
 
 /* ---------- player / position ---------- */
@@ -724,14 +782,15 @@ function buildContours(){
 /* ---------- real map tiles ---------- */
 const LAYERS = {
   // keyless tile sources only
+  vector:{name:"Схема", attr:"© участники OpenStreetMap"},
   topo:  {name:"Рельеф", max:17, dim:0.42, sub:"abc", url:"https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png", attr:"© OpenStreetMap, SRTM, © OpenTopoMap (CC-BY-SA)"},
-  scheme:{name:"Схема",  max:19, dim:0.50, sub:"",    url:"https://tile.openstreetmap.org/{z}/{x}/{y}.png", attr:"© участники OpenStreetMap"},
+  scheme:{name:"OSM",    max:19, dim:0.50, sub:"",    url:"https://tile.openstreetmap.org/{z}/{x}/{y}.png", attr:"© участники OpenStreetMap"},
   sat:   {name:"Спутник",max:18, dim:0.30, sub:"",    url:"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", attr:"Imagery © Esri, Maxar, Earthstar Geographics"},
   none:  {name:"Без карты"}
 };
-const LAYER_ORDER = ["topo","scheme","sat","none"];
-let layer = store.get("iskin.layer2") || "topo";
-if(!LAYERS[layer]) layer="topo";
+const LAYER_ORDER = ["vector","topo","sat","none"];
+let layer = store.get("iskin.layer3") || "vector";
+if(!LAYERS[layer] || !LAYER_ORDER.includes(layer)) layer="vector";
 const tileCache = new Map();
 function tileImg(key, z, x, y){
   const k = `${key}/${z}/${x}/${y}`;
@@ -784,7 +843,7 @@ function drawTiles(){
 function applyLayer(){
   $("layerBtn").textContent = LAYERS[layer].name;
   $("attr").textContent = LAYERS[layer].attr || "";
-  store.set("iskin.layer2", layer);
+  store.set("iskin.layer3", layer);
 }
 
 /* ---------- drawing ---------- */
@@ -803,7 +862,8 @@ function bearingTo(t){ return (Math.atan2(t.x-player.x, -(t.y-player.y))*180/Mat
 
 function drawMap(now){
   ctx.fillStyle="#16202d"; ctx.fillRect(0,0,W,H);
-  if(layer!=="none") drawTiles();
+  if(layer==="vector") drawVector();
+  else if(layer!=="none") drawTiles();
   else if(!field.length){
     ctx.lineWidth=1; ctx.strokeStyle="rgba(63,193,181,0.10)";
     for(const line of contours){
