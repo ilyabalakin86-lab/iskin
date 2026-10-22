@@ -2017,25 +2017,46 @@ function drawWorldDots(now, r){
     if(d.t!=="w" && cam.z>0.8){ ctx.fillStyle=`rgba(${COL[d.t]},${a*0.18})`; ctx.beginPath(); ctx.arc(sx,sy,r*3,0,6.283); ctx.fill(); }
   }
 }
+/* fog as a stepped, rasterised field: the clearing is quantised into a few levels and every step gets a thin
+   contour line — indigo far out, orange in the middle, pale near the open ground (like an isoline plot) */
+const FOGPX=2, FOGN=6, FOGA=0.86;
+const FOGLINE=[null,[70,80,180],[105,115,225],[255,118,52],[255,165,80],[255,228,170],[255,248,225]];
+let fogF=null, fogFx=null, fogImg=null, fogKey="";
 function drawFog(){
-  if(!fogC){ fogC=document.createElement("canvas"); fogCtx=fogC.getContext("2d"); }
-  if(fogC.width!==Math.round(W) || fogC.height!==Math.round(H)){ fogC.width=Math.round(W); fogC.height=Math.round(H); }
-  const f=fogCtx;
-  f.globalCompositeOperation="source-over"; f.clearRect(0,0,W,H);
-  f.fillStyle="rgba(8,12,19,0.84)"; f.fillRect(0,0,W,H);
-  f.globalCompositeOperation="destination-out";
-  // explored ground
-  const [x0,y0]=w2s(-MH*EXP,-MH*EXP), side=MH*2*EXP*cam.z;
-  f.imageSmoothingEnabled=true; f.drawImage(wMask, x0, y0, side, side);
-  // the aura around the player
-  if(player){
-    const [px,py]=w2s(player.x,player.y), rr=AURA*cam.z;
-    const gr=f.createRadialGradient(px,py,rr*0.55,px,py,rr);
-    gr.addColorStop(0,"rgba(0,0,0,1)"); gr.addColorStop(1,"rgba(0,0,0,0)");
-    f.fillStyle=gr; f.beginPath(); f.arc(px,py,rr,0,6.283); f.fill();
+  const w=Math.ceil(W/FOGPX), h=Math.ceil(H/FOGPX);
+  if(!fogF){ fogF=document.createElement("canvas"); fogFx=fogF.getContext("2d",{willReadFrequently:true}); fogC=document.createElement("canvas"); fogCtx=fogC.getContext("2d"); }
+  if(fogF.width!==w || fogF.height!==h){ fogF.width=fogC.width=w; fogF.height=fogC.height=h; fogImg=fogCtx.createImageData(w,h); fogKey=""; }
+  const key=[cam.x.toFixed(1),cam.y.toFixed(1),cam.z.toFixed(4),player?player.x.toFixed(1):0,player?player.y.toFixed(1):0,world.explored.size,w,h].join("|");
+  if(key!==fogKey){
+    fogKey=key;
+    const f=fogFx, s=1/FOGPX;
+    f.globalCompositeOperation="source-over"; f.fillStyle="#000"; f.fillRect(0,0,w,h);
+    f.globalCompositeOperation="lighter";
+    const [x0,y0]=w2s(-MH*EXP,-MH*EXP), side=MH*2*EXP*cam.z;
+    // a cheap box blur (9 shifted copies averaged) so the steps around explored ground spread out like isolines
+    f.imageSmoothingEnabled=true; f.globalAlpha=1/9; const dd=EXP*cam.z*s*1.1;
+    for(let i=-1;i<=1;i++) for(let j=-1;j<=1;j++) f.drawImage(wMask, x0*s+i*dd, y0*s+j*dd, side*s, side*s);
+    f.globalAlpha=1;
+    if(player){
+      const [px,py]=w2s(player.x,player.y), rr=AURA*cam.z*s;
+      const gr=f.createRadialGradient(px*s,py*s,0,px*s,py*s,rr);
+      gr.addColorStop(0,"rgba(255,255,255,1)"); gr.addColorStop(0.45,"rgba(255,255,255,1)"); gr.addColorStop(1,"rgba(255,255,255,0)");
+      f.fillStyle=gr; f.beginPath(); f.arc(px*s,py*s,rr,0,6.283); f.fill();
+    }
+    const src=f.getImageData(0,0,w,h).data, out=fogImg.data, n=w*h, lv=new Uint8Array(n);
+    for(let i=0;i<n;i++) lv[i]=Math.min(FOGN, Math.floor(src[i*4]/255*FOGN+1e-6));
+    for(let y=0;y<h;y++) for(let x=0;x<w;x++){
+      const i=y*w+x, l=lv[i], o=i*4;
+      const r = x<w-1 ? lv[i+1] : l, d = y<h-1 ? lv[i+w] : l;
+      const edge = r!==l ? Math.max(r,l) : d!==l ? Math.max(d,l) : 0;
+      if(edge){ const c=FOGLINE[edge]; out[o]=c[0]; out[o+1]=c[1]; out[o+2]=c[2]; out[o+3]=170; }
+      else { out[o]=8; out[o+1]=12; out[o+2]=19; out[o+3]=Math.round(255*FOGA*(1-l/FOGN)); }
+    }
+    fogCtx.putImageData(fogImg,0,0);
   }
-  f.globalCompositeOperation="source-over";
+  ctx.imageSmoothingEnabled=false;
   ctx.drawImage(fogC,0,0,W,H);
+  ctx.imageSmoothingEnabled=true;
 }
 
 /* ---------- route sources ---------- */
