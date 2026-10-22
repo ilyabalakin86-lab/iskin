@@ -477,7 +477,7 @@ function setRoute(r){
    No labels, no icons. Fails silently offline. */
 let field = [], fieldFor = null;
 let base = null;        // {roads:{main:Path2D,res:Path2D,svc:Path2D,path:Path2D,coast:Path2D}, sea:{canvas,x0,y0,step}}
-const FIELD_KEY = "iskin.base.v2";
+const FIELD_KEY = "iskin.base.v3";
 function roadClass(hw){
   if(/^(motorway|trunk|primary|secondary|tertiary)(_link)?$/.test(hw)) return "main";
   if(/^(residential|unclassified|living_street|road)$/.test(hw)) return "res";
@@ -495,7 +495,7 @@ function makeBase(roads, sea){
   if(sea && sea.bits){
     const c=document.createElement("canvas"); c.width=sea.cols; c.height=sea.rows;
     const g=c.getContext("2d"), img=g.createImageData(sea.cols,sea.rows);
-    for(let i=0;i<sea.bits.length;i++){ if(sea.bits[i]==="1"){ const o=i*4; img.data[o]=18; img.data[o+1]=36; img.data[o+2]=58; img.data[o+3]=255; } }
+    for(let i=0;i<sea.bits.length;i++){ const v=+sea.bits[i]; if(v>0){ const o=i*4; img.data[o]=18; img.data[o+1]=36; img.data[o+2]=58; img.data[o+3]=Math.round(255*v/9); } }
     g.putImageData(img,0,0);
     s={canvas:c, x0:sea.x0, y0:sea.y0, step:sea.step};
   }
@@ -507,25 +507,34 @@ async function buildField(){
   fieldFor=id; field=[]; base=null;
   const R = rng(4242);
   const cached = store.get(FIELD_KEY);
-  if(cached && cached.id===id){
+  if(cached && cached.id===id && cached.roads && cached.roads.length){
     if(cached.d) field = cached.d.map(([x,y,k])=>({x,y,k,ph:R()*6.283}));
-    if(cached.roads) base = makeBase(cached.roads, cached.sea);
+    base = makeBase(cached.roads, cached.sea);
     return;
   }
-  const xs=route.pts.map(p=>p.x), ys=route.pts.map(p=>p.y), M=700;
+  const xs=route.pts.map(p=>p.x), ys=route.pts.map(p=>p.y), M=1300;
   const bb={minX:Math.min(...xs)-M, maxX:Math.max(...xs)+M, minY:Math.min(...ys)-M, maxY:Math.max(...ys)+M};
   const nw=toLL(bb.minX,bb.minY), se=toLL(bb.maxX,bb.maxY);
   // keep a clear band around the trail so the route's own Lyten stays readable
   const cell=25, near=new Set();
   samples.forEach(s=>{ const cx=Math.floor(s.x/cell), cy=Math.floor(s.y/cell); for(let i=-1;i<=1;i++) for(let j=-1;j<=1;j++) near.add((cx+i)+","+(cy+j)); });
   const nearRoute=(x,y)=>near.has(Math.floor(x/cell)+","+Math.floor(y/cell));
+  const FADE=600, edge=(x,y)=>Math.max(0,Math.min(1, Math.min(x-bb.minX, bb.maxX-x, y-bb.minY, bb.maxY-y)/FADE));
   const [osm, relief] = await Promise.allSettled([
     (async()=>{
       const box=`${se.lat.toFixed(5)},${nw.lon.toFixed(5)},${nw.lat.toFixed(5)},${se.lon.toFixed(5)}`;
       const q=`[out:json][timeout:25];(way["highway"](${box});way["natural"="coastline"](${box}););out geom;`;
-      const r=await fetch("https://overpass-api.de/api/interpreter",{method:"POST",body:"data="+encodeURIComponent(q)});
-      if(!r.ok) throw new Error("overpass "+r.status);
-      const j=await r.json(), pts=[], roads=[];
+      // several public Overpass servers: the first that answers wins
+      let j=null;
+      for(const ep of ["https://overpass-api.de/api/interpreter","https://overpass.kumi.systems/api/interpreter","https://overpass.private.coffee/api/interpreter","https://maps.mail.ru/osm/tools/overpass/api/interpreter"]){
+        try{
+          const ctl=new AbortController(), to=setTimeout(()=>ctl.abort(),20000);
+          const r=await fetch(ep+"?data="+encodeURIComponent(q),{signal:ctl.signal}); clearTimeout(to);
+          if(r.ok){ j=await r.json(); if(j && j.elements) break; }
+        }catch(e){}
+      }
+      if(!j) throw new Error("overpass unavailable");
+      const pts=[], roads=[];
       for(const w of (j.elements||[])){
         if(!w.geometry || w.geometry.length<2) continue;
         const tags=w.tags||{}, hw=tags.highway||"";
@@ -538,7 +547,7 @@ async function buildField(){
         let carry=R()*step;
         for(let i=2;i<xy.length;i+=2){
           const ax=xy[i-2], ay=xy[i-1], bx=xy[i], by=xy[i+1], L=Math.hypot(bx-ax,by-ay); let d=carry;
-          while(d<L){ const t=d/L, x=ax+(bx-ax)*t+(R()-.5)*3, y=ay+(by-ay)*t+(R()-.5)*3; if(!nearRoute(x,y)) pts.push([x,y,0]); d+=step*(0.7+R()*0.6); }
+          while(d<L){ const t=d/L, x=ax+(bx-ax)*t+(R()-.5)*3, y=ay+(by-ay)*t+(R()-.5)*3; if(!nearRoute(x,y) && R()<edge(x,y)) pts.push([x,y,0]); d+=step*(0.7+R()*0.6); }
           carry=d-L;
         }
       }
@@ -563,17 +572,17 @@ async function buildField(){
         const px=Math.min(255,Math.floor((fx%1)*256)), py=Math.min(255,Math.floor((fy%1)*256)), i=(py*256+px)*4;
         return d[i]*256 + d[i+1] + d[i+2]/256 - 32768;
       };
-      const step=12, iv=20, pts=[];
+      const step=14, iv=20, pts=[];
       for(let y=bb.minY;y<bb.maxY;y+=step) for(let x=bb.minX;x<bb.maxX;x+=step){
         const e0=elev(x,y); if(e0==null || e0<3) continue;          // skip the sea
         const e1=elev(x+step,y), e2=elev(x,y+step), c0=Math.floor(e0/iv);
         const cross=(e1!=null && Math.floor(e1/iv)!==c0) || (e2!=null && Math.floor(e2/iv)!==c0);
-        if(cross && R()<0.42){ const px=x+(R()-.5)*step*0.6, py=y+(R()-.5)*step*0.6; if(!nearRoute(px,py)) pts.push([px,py,1]); }
+        if(cross && R()<0.28*edge(x,y)){ const px=x+(R()-.5)*step*0.6, py=y+(R()-.5)*step*0.6; if(!nearRoute(px,py)) pts.push([px,py,1]); }
       }
       // sea mask on a coarse grid
       const ss=20, cols=Math.ceil((bb.maxX-bb.minX)/ss), rows=Math.ceil((bb.maxY-bb.minY)/ss);
       let bits="";
-      for(let r=0;r<rows;r++) for(let c=0;c<cols;c++){ const e=elev(bb.minX+(c+.5)*ss, bb.minY+(r+.5)*ss); bits += (e!=null && e<1) ? "1" : "0"; }
+      for(let r=0;r<rows;r++) for(let c=0;c<cols;c++){ const e=elev(bb.minX+(c+.5)*ss, bb.minY+(r+.5)*ss); bits += (e!=null && e<1) ? String(Math.round(edge(bb.minX+(c+.5)*ss, bb.minY+(r+.5)*ss)*9)) : "0"; }
       return {pts, sea:{x0:Math.round(bb.minX), y0:Math.round(bb.minY), step:ss, cols, rows, bits}};
     })()
   ]);
@@ -585,7 +594,8 @@ async function buildField(){
   if(out.length>MAX){ const k=MAX/out.length; out=out.filter(()=>R()<k); }
   field = out.map(([x,y,k])=>({x,y,k,ph:R()*6.283}));
   if(roads || sea) base = makeBase(roads||[], sea);
-  if(field.length || roads) store.set(FIELD_KEY, {id, d:out.map(([x,y,k])=>[Math.round(x),Math.round(y),k]), roads, sea});
+  if(!(roads && roads.length)) setTimeout(()=>{ if(fieldFor===id){ fieldFor=null; buildField(); } }, 60000);
+  if(roads && roads.length) store.set(FIELD_KEY, {id, d:out.map(([x,y,k])=>[Math.round(x),Math.round(y),k]), roads, sea});
 }
 /* Waze-like night map: flat land, darker sea, soft rounded roads, thin dashed paths, nothing written */
 function drawVector(){
