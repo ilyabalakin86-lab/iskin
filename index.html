@@ -172,7 +172,7 @@ canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;displa
         <span><b id="sKm">0.00</b> км</span>
         <span>набор <b id="sUp">0</b> м</span>
         <span>≈ <b id="sKcal">0</b> ккал</span>
-        <span><b id="sPct">0</b>% тропы</span>
+        <span><b id="sPct">0</b><span id="sPctL">% тропы</span></span>
       </div>
     </div>
   </div>
@@ -181,6 +181,7 @@ canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;displa
     <div class="card" role="dialog" aria-label="Меню">
       <h2>Маршрут</h2>
       <div class="row">
+        <button class="btn" data-route="world">Открытый мир</button>
         <button class="btn" data-route="blue">Синяя петля</button>
         <button class="btn" data-route="near">Петля вокруг меня</button>
         <button class="btn" id="gpxBtn">Загрузить GPX</button>
@@ -380,6 +381,7 @@ function resample(pts, step){
 }
 
 function generate(){
+  if(route.id==="world"){ samples=[{x:0,y:0,e:0,s:0}]; routeLen=0; particles=[]; golds=[]; return; }
   const R = rng(route.id.split("").reduce((h,c)=>h*31+c.charCodeAt(0)|0, 7));
   samples = resample(route.pts, 5);
   particles = [];
@@ -409,6 +411,11 @@ function generate(){
 /* hidden branch: from a portal to its treasure, revealed after the riddle */
 function makeBranch(g, gi){
   let tx=g.tx, ty=g.ty;
+  if(tx==null && g.wid){
+    // open world: the secret path runs 140–220 m from the portal in a direction fixed by the portal itself
+    const R=rng(Math.round(Math.abs(g.lat*1e5+g.lon*1e5))), a=R()*6.283, dist=140+R()*80;
+    tx=g.x+Math.cos(a)*dist; ty=g.y+Math.sin(a)*dist;
+  }
   if(tx==null){
     const R = rng(Math.round(g.x*7+g.y*13+gi*101));
     const ns = nearestSample(g.x,g.y), a=samples[Math.max(0,ns.i-2)], b=samples[Math.min(samples.length-1,ns.i+2)];
@@ -430,7 +437,7 @@ function makeBranch(g, gi){
 const SKEY = "iskin.pilot.v2";
 let stats = {dist:0, up:0, w:0, g:0, o:0, au:0};
 function save(){
-  route.golds = golds.map(g=>({x:g.x,y:g.y,type:g.type,place:g.place,q:g.q,a:g.a,hint:g.hint,tx:g.tx,ty:g.ty}));
+  route.golds = isWorld() ? [] : golds.map(g=>({x:g.x,y:g.y,type:g.type,place:g.place,q:g.q,a:g.a,hint:g.hint,tx:g.tx,ty:g.ty}));
   const data = {
     routeId: route.id,
     custom: {name:route.name, start:[LAT0,LON0], pts:route.pts, golds:route.golds},
@@ -441,13 +448,14 @@ function save(){
     stats
   };
   store.set(SKEY, data);
+  worldSave();
 }
 function load(){
   const d = store.get(SKEY);
   if(d && d.custom){
     LAT0=d.custom.start[0]; LON0=d.custom.start[1];
     route = {id:d.routeId, name:d.custom.name, pts:d.custom.pts, golds:d.custom.golds};
-  } else route = buildRoute(ASPRO);
+  } else route = makeWorldRoute(W_HOME.lat, W_HOME.lon);   // new players start in the open world
   generate();
   if(d && d.routeId===route.id){
     if(d.col && d.col.length===particles.length) for(let i=0;i<particles.length;i++) particles[i].c = d.col[i]==="1"?1:0;
@@ -463,6 +471,7 @@ function load(){
   }
   // the valley portal on the Blue loop is a battle with the Idol
   if(route.id==="blue") golds.forEach(g=>{ if(g.place==="Подъём из долины"){ g.type="battle"; g.place="Идол долины"; } });
+  if(isWorld()){ player={x:0,y:0}; worldLoad(); }
 }
 function setRoute(r){
   route = r; generate();
@@ -470,6 +479,7 @@ function setRoute(r){
   lastPos=null; lastSnap=null; sim.idx=0; sim.detour=null;
   player = {x:samples[0].x, y:samples[0].y};
   cam.x=player.x; cam.y=player.y; follow=true;
+  if(isWorld()) worldLoad();
   save(); updateHUD(); updateRouteNote();
   buildField();
 }
@@ -651,7 +661,7 @@ function onPosition(x,y,alt){
   let got=0;
   const take = p => { if(!p.c){ p.c=1; p.ct=performance.now(); stats[p.t]++; got++; } };
   const ns = nearestSample(x,y);
-  if(ns.d < CORRIDOR){
+  if(!isWorld() && ns.d < CORRIDOR){
     let from = ns.i-3, to = ns.i+3;
     // fill small gaps between GPS fixes so nothing is skipped along the trail
     if(lastSnap!=null && Math.abs(ns.i-lastSnap) <= GAP_FILL){ from=Math.min(from,lastSnap); to=Math.max(to,lastSnap); }
@@ -662,6 +672,7 @@ function onPosition(x,y,alt){
     const p=particles[i];
     if(!p.c && Math.hypot(p.x-x,p.y-y)<PICK_G) take(p);
   }
+  if(isWorld()){ got+=worldCollect(x,y); worldExplore(x,y); }
   // hidden branches and treasures
   golds.forEach(g=>{
     if(!g.branch) return;
@@ -696,7 +707,13 @@ function startGPS(){
       if(c.accuracy>40){ setStatus(`Слабый GPS: ±${Math.round(c.accuracy)} м`); return; }
       if(sim.on) return;
       gpsOk = true;
-      const q = toXY(c.latitude, c.longitude);
+      let q = toXY(c.latitude, c.longitude);
+      if(isWorld()){
+        if(Math.hypot(q.x,q.y)>15000){ worldRebase(c.latitude,c.longitude); q=toXY(c.latitude,c.longitude); lastPos=null; cam.x=q.x; cam.y=q.y; }
+        setStatus(`GPS ±${Math.round(c.accuracy)} м`); onPosition(q.x, q.y, c.altitude);
+        if(c.heading!=null && !isNaN(c.heading) && c.speed>0.5) moveBearing=c.heading;
+        return;
+      }
       // if far from route (>5 km), tell the player
       const near = nearestSample(q.x,q.y);
       setStatus(near.d>3000 ? `Ты в ${(near.d/1000).toFixed(0)} км от тропы — выбери «Петля вокруг меня»` : `GPS ±${Math.round(c.accuracy)} м`);
@@ -737,6 +754,7 @@ function enableCompass(silent){
 const sim = {on:false, idx:0, detour:null, speed:1.4*7};
 function simStep(dt){
   if(!sim.on || !player) return;
+  if(isWorld() && !sim.detour) return;                 // open world: the walker only goes where you tap
   let tx, ty;
   if(sim.detour){ tx=sim.detour.x; ty=sim.detour.y; }
   else {
@@ -907,9 +925,11 @@ function initGL(){
 }
 function syncGL(force){
   if(!gl.map) return;
-  const show = layer==="vector" && mode==="map";
-  const el=$("mapgl"); if(el.style.display!==(show?"block":"none")) el.style.display=show?"block":"none";
-  if(!show) return;
+  // keep the tile map running (hidden) on other layers too: the open world reads its streets
+  const el=$("mapgl"), disp=mode==="map"?"block":"none", vis=layer==="vector"?"visible":"hidden";
+  if(el.style.display!==disp) el.style.display=disp;
+  if(el.style.visibility!==vis) el.style.visibility=vis;
+  if(mode!=="map") return;
   // our camera: cam.z px per metre, cam centred at 45% of the height → MapLibre centre + zoom (512px tiles)
   const c=toLL(cam.x, cam.y+(H*0.5-H*0.45)/cam.z);
   const zoom=Math.log2(78271.517*Math.cos(c.lat*Math.PI/180)*cam.z);
@@ -970,8 +990,10 @@ function drawMap(now){
     }
   }
   // route ghost line
-  ctx.setLineDash([2,6]); ctx.strokeStyle="rgba(150,160,255,0.9)"; ctx.lineWidth=2;
-  ctx.beginPath(); route.pts.forEach((p,i)=>{ const [sx,sy]=w2s(p.x,p.y); i?ctx.lineTo(sx,sy):ctx.moveTo(sx,sy); }); ctx.stroke(); ctx.setLineDash([]);
+  if(!isWorld()){
+    ctx.setLineDash([2,6]); ctx.strokeStyle="rgba(150,160,255,0.9)"; ctx.lineWidth=2;
+    ctx.beginPath(); route.pts.forEach((p,i)=>{ const [sx,sy]=w2s(p.x,p.y); i?ctx.lineTo(sx,sy):ctx.moveTo(sx,sy); }); ctx.stroke(); ctx.setLineDash([]);
+  }
   // recorded track
   if(recPts.length>1){ ctx.strokeStyle="rgba(255,138,138,0.8)"; ctx.lineWidth=2; ctx.beginPath(); recPts.forEach((p,i)=>{ const [sx,sy]=w2s(p.x,p.y); i?ctx.lineTo(sx,sy):ctx.moveTo(sx,sy); }); ctx.stroke(); }
 
@@ -990,6 +1012,8 @@ function drawMap(now){
     ctx.beginPath(); ctx.arc(sx,sy,r,0,6.283); ctx.fill();
     if(p.t!=='w' && cam.z>0.8){ ctx.fillStyle=`rgba(${COL[p.t]},${a*0.18})`; ctx.beginPath(); ctx.arc(sx,sy,r*3,0,6.283); ctx.fill(); }
   }
+  // open world: street Lyten, then the fog over everything not yet explored (portals and treasures stay above it)
+  if(isWorld()){ drawWorldDots(now, r); ctx.globalCompositeOperation="source-over"; drawFog(); ctx.globalCompositeOperation="lighter"; }
   // revealed branches: gold dust along the secret path, treasure as a pixel star
   golds.forEach(g=>{
     if(!g.branch) return;
@@ -1131,12 +1155,15 @@ function updateHUD(){
   $("sKm").textContent=km.toFixed(2); $("sUp").textContent=Math.round(stats.up);
   $("sKcal").textContent=Math.round(km*55 + stats.up*0.7);
   const onPath = particles.filter(p=>p.t!=="g"), got = onPath.filter(p=>p.c).length;
-  $("sPct").textContent = onPath.length? Math.round(got/onPath.length*100):0;
+  if(isWorld()){ $("sPct").textContent=(world.explored.size*EXP*EXP/10000).toFixed(1); $("sPctL").textContent=" га открыто"; }
+  else { $("sPct").textContent = onPath.length? Math.round(got/onPath.length*100):0; $("sPctL").textContent="% тропы"; }
 }
 function updateRouteNote(){
   const n = $("routeNote");
   const base = `Сейчас: ${route.name}, ${(routeLen/1000).toFixed(1)} км в одну сторону, ${golds.length} особых места.`;
-  n.textContent = route.id==="blue"
+  n.textContent = route.id==="world"
+    ? "Сейчас: открытый мир. Маршрута нет — вокруг тебя ореол, туман расходится, когда идёшь. Порталы видны издалека."
+    : route.id==="blue"
     ? base.replace(" в одну сторону","")+" Кольцо от деревни к бухте у мыса Аспро и обратно, трек из Wikiloc."
     : base;
   document.querySelectorAll("[data-route]").forEach(b=>b.classList.toggle("on", b.dataset.route===route.id));
@@ -1796,6 +1823,191 @@ bEl("bEndBtn").onclick=()=>{
 };
 bEl("trainBtn").onclick=()=>{ $("sheet").classList.remove("open"); openBattle(null,true); };
 
+/* ---------- open world ----------
+   No route needed. Around the player: an aura (fog of war lifts as you walk, explored ground stays clear),
+   Lyten dots laid along real streets and paths taken from the map's vector tiles, green clusters off the roads.
+   Portals stand on a ~700 m grid derived from coordinates, so every player sees the same portals in the same
+   places; they show through the fog. Collected dots grow back after a few hours. */
+const WKEY = "iskin.world.v1";
+const W_HOME = {lat:34.6694, lon:32.7036};          // Pissouri, until GPS says otherwise
+const AURA = 150, EXP = 25, RESPAWN = 6*3600e3, KCOS = Math.cos(35*Math.PI/180), MH = 240;
+const isWorld = () => route && route.id==="world";
+let world = {explored:new Set(), col:new Map(), portals:{}};
+let wDots = new Map();                                 // key -> {x,y,t,c,ct,ph}
+let wMask = null, wMaskCtx = null, fogC = null, fogCtx = null;
+
+function wHash(a,b,s){ let h=Math.imul(a|0,374761393)+Math.imul(b|0,668265263)+Math.imul((s|0)+1,2246822519); h=Math.imul(h^(h>>>13),1274126177); return ((h^(h>>>16))>>>0)/4294967296; }
+const qLat = (lat,m) => Math.floor(lat*111320/m), qLon = (lon,m) => Math.floor(lon*111320*KCOS/m);
+const cLat = (q,m) => (q+0.5)*m/111320, cLon = (q,m) => (q+0.5)*m/(111320*KCOS);
+
+function makeWorldRoute(lat,lon){
+  LAT0=lat; LON0=lon;
+  return {id:"world", name:"Открытый мир", pts:[{x:0,y:0,e:0},{x:1,y:0,e:0}], golds:[]};
+}
+function worldLoad(){
+  const d=store.get(WKEY);
+  world={explored:new Set(d&&d.explored||[]), col:new Map(d&&d.col||[]), portals:(d&&d.portals)||{}};
+  const now=Date.now(); for(const [k,t] of world.col) if(now-t>RESPAWN) world.col.delete(k);
+  wDots=new Map(); golds=[]; worldMaskRebuild(); worldPortals();
+}
+function worldSave(){
+  if(!isWorld()) return;
+  golds.forEach(g=>{ if(g.wid) world.portals[g.wid]=Object.assign(world.portals[g.wid]||{}, {solved:!!g.solved, found:!!g.found, tx:g.tx, ty:g.ty, lat:g.lat, lon:g.lon}); });
+  // store treasure positions in lat/lon so they survive a change of origin
+  golds.forEach(g=>{ if(g.wid && g.branch){ const ll=toLL(g.branch.tx,g.branch.ty); world.portals[g.wid].tlat=ll.lat; world.portals[g.wid].tlon=ll.lon; } });
+  let col=[...world.col]; if(col.length>20000) col=col.slice(-20000);
+  store.set(WKEY, {explored:[...world.explored], col, portals:world.portals});
+}
+// re-centre the local frame on the player when they are somewhere else entirely (another town)
+function worldRebase(lat,lon){
+  LAT0=lat; LON0=lon; route=makeWorldRoute(lat,lon); generate();
+  wDots=new Map(); golds=[]; worldMaskRebuild(); worldPortals();
+  fieldFor=null; buildField();
+}
+
+/* explored ground: one pixel per 25 m cell, drawn scaled with smoothing = soft-edged clearings in the fog */
+function worldMaskRebuild(){
+  if(!wMask){ wMask=document.createElement("canvas"); wMask.width=wMask.height=MH*2; wMaskCtx=wMask.getContext("2d"); }
+  wMaskCtx.clearRect(0,0,MH*2,MH*2); wMaskCtx.fillStyle="#fff";
+  for(const k of world.explored){ const [a,b]=k.split(",").map(Number); const p=toXY(cLat(a,EXP),cLon(b,EXP)); wMaskPx(p.x,p.y); }
+}
+function wMaskPx(x,y){ const mx=Math.floor(x/EXP)+MH, my=Math.floor(y/EXP)+MH; if(mx>=0&&my>=0&&mx<MH*2&&my<MH*2) wMaskCtx.fillRect(mx,my,1,1); }
+function worldExplore(x,y){
+  const ll=toLL(x,y), qa=qLat(ll.lat,EXP), qo=qLon(ll.lon,EXP), n=Math.ceil(AURA*0.8/EXP);
+  let added=false;
+  for(let i=-n;i<=n;i++) for(let j=-n;j<=n;j++){
+    if(i*i+j*j>n*n) continue;
+    const k=(qa+i)+","+(qo+j);
+    if(!world.explored.has(k)){ world.explored.add(k); const p=toXY(cLat(qa+i,EXP),cLon(qo+j,EXP)); wMaskPx(p.x,p.y); added=true; }
+  }
+  return added;
+}
+
+/* dots along streets and paths from the vector tiles; a sparse scatter when the map isn't available */
+const DOT = 12;
+function worldDotsTick(){
+  if(!isWorld() || !player) return;
+  const now=Date.now(), P=toLL(player.x,player.y), R2=700*700;
+  const addDot=(key,lat,lon,t)=>{
+    if(wDots.has(key)) return;
+    const q=toXY(lat,lon); if((q.x-player.x)**2+(q.y-player.y)**2>R2) return;
+    const ct=world.col.get(key), c = ct && now-ct<RESPAWN ? 1 : 0;
+    wDots.set(key,{x:q.x,y:q.y,t,c,ct:0,ph:wHash(qLat(lat,DOT),qLon(lon,DOT),9)*6.283,key});
+  };
+  let roadsSeen=0;
+  if(gl.ready){
+    let feats=[]; try{ feats=gl.map.querySourceFeatures("omt",{sourceLayer:"transportation"}); }catch(e){}
+    for(const f of feats){
+      const cls=f.properties&&f.properties.class; if(!cls) continue;
+      const isPath = cls==="path"||cls==="track";
+      if(!isPath && !/^(minor|service|tertiary|secondary|primary|trunk|motorway)$/.test(cls)) continue;
+      const g=f.geometry, lines = g.type==="LineString"?[g.coordinates]: g.type==="MultiLineString"?g.coordinates:[];
+      for(const L of lines) for(let i=1;i<L.length;i++){
+        const [lo1,la1]=L[i-1], [lo2,la2]=L[i];
+        const a=toXY(la1,lo1), b=toXY(la2,lo2), len=Math.hypot(b.x-a.x,b.y-a.y);
+        if(Math.min((a.x-player.x)**2+(a.y-player.y)**2,(b.x-player.x)**2+(b.y-player.y)**2)>R2*1.3) continue;
+        roadsSeen++;
+        for(let d=0; d<=len; d+=5){
+          const t=len?d/len:0, la=la1+(la2-la1)*t, lo=lo1+(lo2-lo1)*t, qa=qLat(la,DOT), qo=qLon(lo,DOT);
+          const h=wHash(qa,qo,1);
+          if(h < (isPath?0.45:0.30)) addDot(qa+":"+qo, la, lo, isPath && wHash(qa,qo,2)<0.55 ? "o" : "w");
+        }
+      }
+    }
+  }
+  if(!roadsSeen && !gl.ready){
+    // no map data: a light scatter so the world is never empty
+    const S=30, qa=qLat(P.lat,S), qo=qLon(P.lon,S), n=Math.ceil(700/S);
+    for(let i=-n;i<=n;i++) for(let j=-n;j<=n;j++){ const h=wHash(qa+i,qo+j,11); if(h<0.10){ const la=cLat(qa+i,S)+(wHash(qa+i,qo+j,12)-.5)*S/111320, lo=cLon(qo+j,S); addDot("s"+(qa+i)+":"+(qo+j), la, lo, "w"); } }
+  }
+  // green clusters off the roads: Lyten that rewards leaving the path
+  { const S=60, qa=qLat(P.lat,S), qo=qLon(P.lon,S), n=Math.ceil(700/S);
+    for(let i=-n;i<=n;i++) for(let j=-n;j<=n;j++){
+      const A=qa+i, B=qo+j; if(wHash(A,B,7)>0.06) continue;
+      const k=6+Math.floor(wHash(A,B,8)*5), la0=cLat(A,S), lo0=cLon(B,S);
+      for(let m=0;m<k;m++){ const r=wHash(A,B,20+m)*6, a=wHash(A,B,40+m)*6.283; addDot("g"+A+":"+B+":"+m, la0+Math.sin(a)*r/111320, lo0+Math.cos(a)*r/(111320*KCOS), "g"); }
+    } }
+  // forget dots far away
+  for(const [k,d] of wDots) if((d.x-player.x)**2+(d.y-player.y)**2>1500*1500) wDots.delete(k);
+}
+
+/* portals on a ~1.1 km grid: same for everyone, visible through the fog */
+const PNAMES=["Врата у дороги","Страж перекрёстка","Тихий двор","Врата над морем","Старая давильня","Камень у тропы","Врата холма","Источник","Белая стена","Порог долины"];
+function worldPortals(){
+  if(!isWorld()) return;
+  const P = player ? toLL(player.x,player.y) : {lat:LAT0,lon:LON0};
+  const S=1100, qa=qLat(P.lat,S), qo=qLon(P.lon,S);
+  for(let i=-1;i<=1;i++) for(let j=-1;j<=1;j++){
+    const A=qa+i, B=qo+j, id="p"+A+":"+B;
+    if(golds.some(g=>g.wid===id)) continue;
+    if(wHash(A,B,3)>0.6) continue;                              // some cells stay empty: ~3 portals around you
+    const st=world.portals[id]||{};
+    const lat = st.lat ?? (A+0.2+0.6*wHash(A,B,4))*S/111320, lon = st.lon ?? (B+0.2+0.6*wHash(A,B,5))*S/(111320*KCOS);
+    const q=toXY(lat,lon), rd=GENERIC_RIDDLES[Math.floor(wHash(A,B,6)*GENERIC_RIDDLES.length)];
+    const g={wid:id, lat, lon, x:q.x, y:q.y, type: wHash(A,B,13)<0.4 ? "battle" : "riddle",
+      place: PNAMES[Math.floor(wHash(A,B,14)*PNAMES.length)], q:rd.q, a:rd.a, hint:rd.hint,
+      solved:!!st.solved, found:!!st.found, branch:null, snapped:!!st.snapped};
+    if(st.tlat!=null){ const t=toXY(st.tlat,st.tlon); g.tx=t.x; g.ty=t.y; }
+    golds.push(g);
+    if(g.solved) makeBranch(g, golds.length-1);
+  }
+}
+// once the streets near an unsnapped portal are known, move it onto the nearest street (within 150 m)
+function worldSnapPortals(){
+  for(const g of golds){
+    if(!g.wid || g.snapped || g.solved) continue;
+    let best=null, bd=150*150;
+    for(const d of wDots.values()){ if(d.t==="g") continue; const dd=(d.x-g.x)**2+(d.y-g.y)**2; if(dd<bd){bd=dd;best=d;} }
+    if(best){ g.x=best.x; g.y=best.y; const ll=toLL(g.x,g.y); g.lat=ll.lat; g.lon=ll.lon; g.snapped=true;
+      world.portals[g.wid]=Object.assign(world.portals[g.wid]||{}, {lat:g.lat, lon:g.lon, snapped:true}); }
+  }
+}
+function worldCollect(x,y){
+  let got=0;
+  for(const d of wDots.values()){
+    if(d.c) continue;
+    if(Math.abs(d.x-x)<PICK_G && Math.abs(d.y-y)<PICK_G && Math.hypot(d.x-x,d.y-y)<PICK_G){
+      d.c=1; d.ct=performance.now(); world.col.set(d.key,Date.now()); stats[d.t]++; got++;
+    }
+  }
+  return got;
+}
+setInterval(()=>{ if(isWorld()){ worldDotsTick(); worldPortals(); worldSnapPortals(); } }, 2000);
+
+/* drawing */
+function drawWorldDots(now, r){
+  for(const d of wDots.values()){
+    let x=d.x, y=d.y, a;
+    if(d.c){ const t=(now-d.ct)/600; if(!d.ct || t>1 || !player) continue; x=d.x+(player.x-d.x)*t; y=d.y+(player.y-d.y)*t; a=1-t; }
+    else a = reduced ? 0.85 : 0.55+0.45*Math.sin(now*0.003+d.ph);
+    const [sx,sy]=w2s(x,y);
+    if(sx<-10||sy<-10||sx>W+10||sy>H+10) continue;
+    ctx.fillStyle=`rgba(${COL[d.t]},${a})`;
+    ctx.beginPath(); ctx.arc(sx,sy,r,0,6.283); ctx.fill();
+    if(d.t!=="w" && cam.z>0.8){ ctx.fillStyle=`rgba(${COL[d.t]},${a*0.18})`; ctx.beginPath(); ctx.arc(sx,sy,r*3,0,6.283); ctx.fill(); }
+  }
+}
+function drawFog(){
+  if(!fogC){ fogC=document.createElement("canvas"); fogCtx=fogC.getContext("2d"); }
+  if(fogC.width!==Math.round(W) || fogC.height!==Math.round(H)){ fogC.width=Math.round(W); fogC.height=Math.round(H); }
+  const f=fogCtx;
+  f.globalCompositeOperation="source-over"; f.clearRect(0,0,W,H);
+  f.fillStyle="rgba(8,12,19,0.84)"; f.fillRect(0,0,W,H);
+  f.globalCompositeOperation="destination-out";
+  // explored ground
+  const [x0,y0]=w2s(-MH*EXP,-MH*EXP), side=MH*2*EXP*cam.z;
+  f.imageSmoothingEnabled=true; f.drawImage(wMask, x0, y0, side, side);
+  // the aura around the player
+  if(player){
+    const [px,py]=w2s(player.x,player.y), rr=AURA*cam.z;
+    const gr=f.createRadialGradient(px,py,rr*0.55,px,py,rr);
+    gr.addColorStop(0,"rgba(0,0,0,1)"); gr.addColorStop(1,"rgba(0,0,0,0)");
+    f.fillStyle=gr; f.beginPath(); f.arc(px,py,rr,0,6.283); f.fill();
+  }
+  f.globalCompositeOperation="source-over";
+  ctx.drawImage(fogC,0,0,W,H);
+}
+
 /* ---------- route sources ---------- */
 function loopAround(lat,lon){
   LAT0=lat; LON0=lon;
@@ -1833,6 +2045,12 @@ $("menuBtn").onclick = () => { updateRouteNote(); $("sheet").classList.add("open
 $("closeSheet").onclick = () => $("sheet").classList.remove("open");
 $("sheet").addEventListener("click", e=>{ if(e.target.id==="sheet") $("sheet").classList.remove("open"); });
 document.querySelectorAll("[data-route]").forEach(b=> b.onclick = () => {
+  if(b.dataset.route==="world"){
+    const go=(la,lo)=>{ setRoute(makeWorldRoute(la,lo)); buildContours(); toast("Открытый мир: иди, туман расходится"); };
+    if(!navigator.geolocation) return go(W_HOME.lat,W_HOME.lon);
+    navigator.geolocation.getCurrentPosition(p=>go(p.coords.latitude,p.coords.longitude), ()=>go(W_HOME.lat,W_HOME.lon), {enableHighAccuracy:true,timeout:8000});
+    return;
+  }
   if(b.dataset.route==="blue"){ setRoute(buildRoute(ASPRO)); buildContours(); toast("Маршрут: Синяя петля"); }
   else {
     const go = (la,lo) => { setRoute(loopAround(la,lo)); buildContours(); toast("Петля ≈ 0,7 км вокруг тебя"); };
@@ -1849,7 +2067,7 @@ $("gpxInput").onchange = e => {
 };
 $("simBtn").onclick = () => {
   sim.on=!sim.on; $("simBtn").classList.toggle("on",sim.on);
-  if(sim.on){ if(!player||nearestSample(player.x,player.y).d>200){ player={x:samples[0].x,y:samples[0].y}; lastPos=null; sim.idx=0; } else sim.idx=nearestSample(player.x,player.y).i; follow=true; setStatus("Симуляция: тап по карте — свернуть с тропы"); $("sheet").classList.remove("open"); }
+  if(sim.on){ if(!player||(!isWorld()&&nearestSample(player.x,player.y).d>200)){ player={x:samples[0].x,y:samples[0].y}; lastPos=null; sim.idx=0; } else sim.idx=nearestSample(player.x,player.y).i; follow=true; setStatus("Симуляция: тап по карте — свернуть с тропы"); $("sheet").classList.remove("open"); }
   else setStatus(gpsOk?"GPS":"Симуляция на паузе");
 };
 $("compassPerm").onclick = enableCompass;
