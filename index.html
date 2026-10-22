@@ -115,6 +115,12 @@ canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;displa
 .battle[data-phase=resolve] .bSetup,.battle[data-phase=resolve] .bEnd{display:none}
 .battle[data-phase=resolve] .bPlan{opacity:.5;pointer-events:none}
 .battle[data-phase=end] .bSetup,.battle[data-phase=end] .bPlan{display:none}
+.pocket{position:absolute;inset:0;z-index:20;background:#000;display:none;align-items:center;justify-content:center;flex-direction:column;gap:14px;color:#3a4656;text-align:center;padding:24px;touch-action:none;user-select:none;-webkit-user-select:none}
+.pocket.open{display:flex}
+.pocket .pc{font:500 44px "Onest",sans-serif;color:#4a5a70;font-variant-numeric:tabular-nums}
+.pocket .ph{font-size:13px;line-height:1.5;max-width:280px}
+.pocket .ring{width:120px;height:120px;border-radius:50%;border:2px solid #1c2633;position:relative}
+.pocket .ring i{position:absolute;inset:-2px;border-radius:50%;border:2px solid #3fc1b5;clip-path:inset(100% 0 0 0);transition:clip-path .1s linear}
 .toast{position:absolute;left:50%;top:70px;transform:translateX(-50%);background:var(--panel);border:1px solid var(--line);padding:8px 14px;border-radius:14px;font-size:14px;opacity:0;transition:opacity .3s;pointer-events:none;z-index:7;white-space:nowrap}
 .toast.show{opacity:1}
 @media (prefers-reduced-motion: reduce){.toast{transition:none}}
@@ -184,6 +190,14 @@ canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;displa
         <button class="btn" id="compassPerm">Включить компас</button>
       </div>
       <p>В симуляции игрок сам идёт по тропе. Тап по карте уводит его в сторону — так можно собрать зелёный Lyten.</p>
+
+      <h3>Прогулка без экрана</h3>
+      <div class="row">
+        <button class="btn" id="pocketBtn">Карманный режим</button>
+        <button class="btn" id="replayBtn">Засчитать прогулку из GPX</button>
+        <input type="file" id="replayInput" accept=".gpx,application/gpx+xml,application/xml,text/xml" hidden>
+      </div>
+      <p>Карманный режим: экран чёрный, касания заблокированы, сбор идёт, при сборе тихий звук. Выход — удержать палец 2 секунды.<br>Или запиши прогулку в Wikiloc или Strava с выключенным экраном, а потом загрузи GPX сюда — игра соберёт всё, мимо чего ты прошёл.</p>
 
       <h3>Запись своей тропы</h3>
       <div class="row">
@@ -274,6 +288,12 @@ canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;displa
     </div>
   </div>
 
+  <div class="pocket" id="pocket">
+    <div class="pc" id="pocketCount">0</div>
+    <div class="ph">частиц за прогулку</div>
+    <div class="ring"><i id="pocketHold"></i></div>
+    <div class="ph">Держи палец на экране 2 секунды, чтобы выйти</div>
+  </div>
   <div class="toast" id="toast"></div>
 </div>
 
@@ -638,9 +658,9 @@ function onPosition(x,y,alt){
       if(navigator.vibrate) try{navigator.vibrate([40,80,40,80,120]);}catch(e){}
     }
   });
-  if(got){ updateHUD(); if(navigator.vibrate) try{navigator.vibrate(12);}catch(e){} }
+  if(got){ updateHUD(); if(!replaying){ if(navigator.vibrate) try{navigator.vibrate(12);}catch(e){} if(pocket.on){ pocket.n+=got; $("pocketCount").textContent=pocket.n; chime(); } } }
   // portals
-  if(riddleOpenFor==null && !AR.open){
+  if(riddleOpenFor==null && !AR.open && !replaying){
     golds.forEach((g,i)=>{
       if(riddleOpenFor!=null || g.solved || dismissed.has(i)) return;
       if(Math.hypot(g.x-x,g.y-y)<GOLD_R) openPrompt(i);
@@ -1828,6 +1848,59 @@ $("testPortal").onclick = () => {
   golds.forEach((g,i)=>{ const d=player?Math.hypot(g.x-player.x,g.y-player.y):i; const k=g.solved?d+1e9:d; if(k<bd){bd=k;best=i;} });
   openAR(best);
 };
+
+/* ---------- walking without the screen ---------- */
+let replaying=false;
+// 1) credit a walk recorded elsewhere (Wikiloc, Strava…) as a GPX file
+function replayGPX(text){
+  const doc=new DOMParser().parseFromString(text,"application/xml");
+  let nodes=[...doc.getElementsByTagName("trkpt")]; if(!nodes.length) nodes=[...doc.getElementsByTagName("rtept")];
+  if(nodes.length<2) throw new Error("В файле нет точек трека");
+  const before={w:stats.w,g:stats.g,o:stats.o,au:stats.au,dist:stats.dist};
+  const keepPlayer=player, keepLast=lastPos, keepAlt=lastAlt;
+  replaying=true; lastPos=null; lastSnap=null; lastAlt=null;
+  let prev=null;
+  for(const n of nodes){
+    const e=n.getElementsByTagName("ele")[0], q=toXY(parseFloat(n.getAttribute("lat")),parseFloat(n.getAttribute("lon")));
+    // fill long gaps between points so nothing along the way is skipped
+    if(prev){ const d=Math.hypot(q.x-prev.x,q.y-prev.y), k=Math.floor(d/8); for(let i=1;i<k;i++) onPosition(prev.x+(q.x-prev.x)*i/k, prev.y+(q.y-prev.y)*i/k, null); }
+    onPosition(q.x,q.y,e?parseFloat(e.textContent):null); prev=q;
+  }
+  replaying=false; player=keepPlayer||player; lastPos=keepLast; lastAlt=keepAlt; lastSnap=null;
+  save(); updateHUD();
+  const got=(stats.w-before.w)+(stats.g-before.g)+(stats.o-before.o), km=(stats.dist-before.dist)/1000;
+  return {got, au:stats.au-before.au, km};
+}
+$("replayBtn").onclick=()=>$("replayInput").click();
+$("replayInput").onchange=e=>{
+  const f=e.target.files[0]; if(!f) return;
+  const r=new FileReader();
+  r.onload=()=>{ try{ const res=replayGPX(r.result); $("sheet").classList.remove("open");
+    toast(res.got||res.au ? `Прогулка засчитана: +${res.got} частиц${res.au?`, +${res.au} золота`:""}, ${res.km.toFixed(1)} км` : `Трек ${res.km.toFixed(1)} км не прошёл рядом с маршрутом`); }
+    catch(err){ toast(err.message||"Не удалось прочитать GPX"); } };
+  r.readAsText(f); e.target.value="";
+};
+// 2) pocket mode: black screen, touches locked, a soft chime on each pickup
+const pocket={on:false,n:0,holdT:null,holdStart:0};
+let actx=null, lastChime=0;
+function chime(){
+  if(!actx) return; const t=actx.currentTime; if(t-lastChime<0.12) return; lastChime=t;
+  const o=actx.createOscillator(), g=actx.createGain();
+  o.type="sine"; o.frequency.setValueAtTime(880+Math.random()*440,t);
+  g.gain.setValueAtTime(0.0001,t); g.gain.exponentialRampToValueAtTime(0.08,t+0.01); g.gain.exponentialRampToValueAtTime(0.0001,t+0.35);
+  o.connect(g).connect(actx.destination); o.start(t); o.stop(t+0.4);
+}
+$("pocketBtn").onclick=()=>{
+  try{ actx = actx || new (window.AudioContext||window.webkitAudioContext)(); actx.resume(); }catch(e){}
+  pocket.on=true; pocket.n=0; $("pocketCount").textContent="0";
+  $("sheet").classList.remove("open"); $("pocket").classList.add("open"); wake(); chime();
+};
+const pk=$("pocket");
+const holdEnd=()=>{ clearInterval(pocket.holdT); pocket.holdT=null; $("pocketHold").style.clipPath="inset(100% 0 0 0)"; };
+pk.addEventListener("pointerdown",e=>{ e.preventDefault(); pocket.holdStart=performance.now(); clearInterval(pocket.holdT);
+  pocket.holdT=setInterval(()=>{ const k=Math.min(1,(performance.now()-pocket.holdStart)/2000); $("pocketHold").style.clipPath=`inset(${(1-k)*100}% 0 0 0)`;
+    if(k>=1){ holdEnd(); pocket.on=false; pk.classList.remove("open"); toast(`За прогулку: +${pocket.n} частиц`); } },50); });
+["pointerup","pointercancel","pointerleave"].forEach(ev=>pk.addEventListener(ev,holdEnd));
 
 /* keep screen awake while walking */
 async function wake(){ try{ if("wakeLock" in navigator) await navigator.wakeLock.request("screen"); }catch(e){} }
