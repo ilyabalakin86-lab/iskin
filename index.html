@@ -1532,8 +1532,10 @@ function openBattle(gi, training){
     open:true, gi, training:!!training, phase:"setup", turn:1, marks:[], fx:[], texts:[], bolts:[], dots:[],
     know: training ? !!bEl("bKnow").checked : !!(stats.know && stats.know.idolSeam),
     hp:{}, pool: training ? {w:150,g:60,o:80} : {w:inv("w"),g:inv("g"),o:inv("o")},
-    spent:{w:0,g:0,o:0}, armor:0, armorMax:0, silenced:false, color:"w", amount:10, t0:performance.now(), shake:0, flash:0, result:null
+    spent:{w:0,g:0,o:0}, armor:0, armorMax:0, silenced:false, color:"w", amount:10, t0:performance.now(), shake:0, flash:0, result:null,
+    balls:[], hold:null, ox:0, anchor:null, strikeAt:0, gulAt:0, gulCancel:false, charge:0, fightAt:0
   });
+  bEl("bAmtMinus").parentElement.style.display="none";   // the throw replaces the plan-and-fire controls
   for(const k in PART) B.hp[k]=PART[k].hp;
   bEl("bTitle").textContent = g ? g.place : "Тренировочный бой";
   bEl("bKnowRow").style.display = training ? "flex" : "none";
@@ -1571,7 +1573,7 @@ function idolAcc(){ return [0.85,0.5,0.15][blindEyes()]; }
 // screen <-> idol space
 function idolGeom(){
   const H=B.H, W=B.W, hgt=Math.min(H*0.55, W*1.15), S=hgt/IH;
-  return {cx:W/2, cy:H*0.36, S, hgt};
+  return {cx:W/2+(B.ox||0), cy:H*0.36, S, hgt};
 }
 function toIdol(sx,sy){ const g=idolGeom(); return [(sx-g.cx)/g.S+IW/2, (sy-g.cy)/g.S+IH/2]; }
 function fromIdol(x,y){ const g=idolGeom(); return [g.cx+(x-IW/2)*g.S, g.cy+(y-IH/2)*g.S]; }
@@ -1600,28 +1602,10 @@ function bRenderUI(){
   st.push(B.hp.mouth>0?(B.silenced?"Рот заглушён":"Рот готов"):"Рот разбит");
   if(B.know) st.push("Шов известен");
   bEl("bState").textContent = st.join(" · ");
-  bEl("bTurn").textContent = `Ход ${B.turn}`;
+  const left = B.fightAt ? Math.max(0,Math.ceil((THROW.limit-(performance.now()-B.fightAt))/1000)) : 0;
+  bEl("bTurn").textContent = B.phase==="plan" ? `${Math.floor(left/60)}:${String(left%60).padStart(2,"0")}` : "";
 }
 function bMsg(t){ bEl("bMsg").textContent=t; }
-
-function bAddMark(sx,sy){
-  if(B.phase!=="plan") return;
-  // tap on an existing mark removes it
-  const hit=B.marks.findIndex(m=>{ const [mx,my]=fromIdol(m.x,m.y); return Math.hypot(mx-sx,my-sy)<26; });
-  if(hit>=0){ B.marks.splice(hit,1); bRenderUI(); bMsg("Точка снята"); return; }
-  const [ix,iy]=toIdol(sx,sy), z=idolZoneAt(ix,iy);
-  if(!z) return bMsg("Мимо фигуры — целься в идола");
-  let zone=z;
-  if(z==="seam" && !B.know) zone="body";
-  if((zone==="eyeL"||zone==="eyeR") && B.hp.dome>0) return bMsg("Глаза закрыты куполом. Сначала разбей купол — лучше оранжевыми");
-  if(zone!=="body" && zone!=="seam" && B.hp[zone]<=0) zone="body";
-  if(B.marks.length>=3) return bMsg("Не больше трёх точек за ход");
-  const n=Math.min(B.amount, bLeft(B.color));
-  if(n<=0) return bMsg(`Нет частиц: ${BNAME[B.color]}`);
-  B.marks.push({x:ix,y:iy,zone,c:B.color,n});
-  bMsg(`${PART[zone].name}: попадание ${Math.round(hitChance(zone,B.color)*100)}%`);
-  bRenderUI();
-}
 
 /* ---------- resolution ---------- */
 const sleep=ms=>new Promise(r=>setTimeout(r, reduced? Math.min(ms,150) : ms));
@@ -1636,76 +1620,101 @@ function chip(zone, frac, dir){
     p.vx=Math.cos(a)*sp+(dir||0); p.vy=Math.sin(a)*sp-1.2;
   }
 }
-async function bFightRound(){
-  if(B.phase!=="plan" || !B.marks.length) return;
-  B.phase="resolve"; bRenderUI();
-  const marks=B.marks.splice(0);
-  marks.forEach(m=>bSpend(m.c,m.n));
-  for(const m of marks){
-    if(B.hp.body<=0) break;
-    const z = zoneAvailable(m.zone) ? m.zone : "body";
-    const chance=hitChance(z,m.c), hit=Math.random()<chance;
-    const [tx,ty]=fromIdol(m.x,m.y);
-    B.bolts.push({x0:B.W/2, y0:B.H+10, tx: hit?tx:tx+(Math.random()<.5?-1:1)*(60+Math.random()*60), ty: hit?ty:ty-40-Math.random()*60, c:m.c, n:m.n, t0:performance.now(), dur:650});
-    await sleep(700);
-    if(!hit){ floatText(tx,ty,"Промах",[200,210,230]); bMsg(`${PART[z].name}: промах`); await sleep(450); continue; }
-    let dmg=m.n*DMG[m.c]*PART[z].mult[m.c];
-    if(m.c==="g") B.dots.push({zone:z, per:m.n*0.25, left:2});
-    B.flash=1;
-    if(z==="seam"){
-      dmg*=3; B.hp.body-=dmg; chip("seam",0.25); chip("body", dmg/PART.body.hp*0.6);
-      floatText(tx,ty,`Шов! −${Math.round(dmg)}`,[255,211,77]); bMsg("Удар в слабое место — тройной урон");
-    } else if(z==="body"){
-      B.hp.body-=dmg; chip("body", dmg/PART.body.hp*0.6);
-      floatText(tx,ty,`−${Math.round(dmg)}`,BCOL[m.c]);
-    } else {
-      const before=B.hp[z]; B.hp[z]-=dmg; const over=Math.max(0,-B.hp[z]);
-      B.hp.body-=Math.min(dmg,before)*0.25+over*0.5;   // parts bleed a little into the body
-      chip(z, Math.min(1, dmg/PART[z].hp*0.7));
-      if(z==="mouth" && B.hp.mouth>0 && dmg>=8){ B.silenced=true; }
-      if(before>0 && B.hp[z]<=0){
-        chip(z,1);
-        const msg = z==="dome" ? "Купол разбит — глаза открыты" : z==="mouth" ? "Рот разбит — гула больше не будет" : `${PART[z].name} ослеп`;
-        floatText(tx,ty,msg,[255,240,200]); bMsg(msg);
-      } else floatText(tx,ty,`${PART[z].name} −${Math.round(dmg)}`,BCOL[m.c]);
-    }
-    bRenderUI(); await sleep(500);
+/* ---------- the throw ----------
+   Real time. Hold a finger: a ball of your particles grows (bigger = harder hit, slower, less accurate).
+   Release: it flies to the reticle above your finger. The idol sways, strikes after a short warning,
+   and every ~11 s its mouth glows for a "гул" — hit the mouth while it glows to break it. Zones as before:
+   dome shields the eyes, blind eyes make it miss, the seam is the weak spot once you know it. */
+const THROW={grow:28, min:3, max:60, strike:4600, tel:800, gulEvery:12000, gulCharge:2400, limit:90000, hit:5, gul:22};
+function applyHit(z,c,n,tx,ty){
+  let dmg=n*DMG[c]*PART[z].mult[c];
+  if(c==="g") B.dots.push({zone:z, per:n*0.12, left:4});
+  B.flash=0.6;
+  if(navigator.vibrate) try{navigator.vibrate(15);}catch(e){}
+  if(z==="seam"){
+    dmg*=3; B.hp.body-=dmg; chip("seam",0.2); chip("body", dmg/PART.body.hp*0.6);
+    floatText(tx,ty,`Шов! −${Math.round(dmg)}`,[255,211,77]); bMsg("Удар в слабое место — тройной урон");
+  } else if(z==="body"){
+    B.hp.body-=dmg; chip("body", dmg/PART.body.hp*0.6);
+    floatText(tx,ty,`−${Math.round(dmg)}`,BCOL[c]);
+  } else {
+    const before=B.hp[z]; B.hp[z]-=dmg; const over=Math.max(0,-B.hp[z]);
+    B.hp.body-=Math.min(dmg,before)*0.25+over*0.5;
+    chip(z, Math.min(1, dmg/PART[z].hp*0.7));
+    if(before>0 && B.hp[z]<=0){
+      chip(z,1);
+      const msg = z==="dome" ? "Купол разбит — глаза открыты" : z==="mouth" ? "Рот разбит — гула больше не будет" : `${PART[z].name} ослеп`;
+      floatText(tx,ty,msg,[255,240,200]); bMsg(msg);
+    } else floatText(tx,ty,`${PART[z].name} −${Math.round(dmg)}`,BCOL[c]);
   }
-  // corrosion from green particles
-  if(B.dots.length && B.hp.body>0){
-    let tot=0;
+}
+function resolveBall(b){
+  if(B.phase!=="plan") return;
+  const spread=3+b.n*0.28;
+  let [ix,iy]=toIdol(b.tx+(Math.random()-.5)*2*spread, b.ty+(Math.random()-.5)*2*spread);
+  // gentle aim assist toward the small targets
+  const cands=[["eyeL",80,96],["eyeR",120,96],["mouth",100,132]]; if(B.know) cands.push(["seam",100,200]);
+  for(const [,cx,cy] of cands){ const [px,py]=fromIdol(cx,cy); if(Math.hypot(px-b.tx,py-b.ty)<22){ ix=cx+(Math.random()-.5)*6; iy=cy+(Math.random()-.5)*4; break; } }
+  let z=idolZoneAt(ix,iy);
+  const [hx,hy]=fromIdol(ix,iy);
+  if(!z){ floatText(hx,hy,"Мимо",[200,210,230]); return; }
+  if((z==="eyeL"||z==="eyeR") && B.hp.dome>0) z="dome";
+  if(z==="seam" && !B.know) z="body";
+  if(z!=="body" && z!=="seam" && B.hp[z]<=0) z="body";
+  applyHit(z,b.c,b.n,hx,hy);
+  if(z==="mouth" && B.gulAt && !B.gulCancel){ B.gulCancel=true; floatText(hx,hy-26,"Гул сорван",[255,240,200]); bMsg("Попал в рот, пока он гудел — удар сорван"); }
+  bRenderUI();
+  if(B.hp.body<=0) bWin();
+}
+function idolHits(dmg,gul){
+  if(Math.random()<idolAcc()){
+    B.armor-=dmg; B.shake=gul?1:0.5;
+    floatText(B.W/2,B.H*0.7,gul?`Гул! −${dmg}`:`−${dmg}`,[255,110,90]);
+    if(navigator.vibrate) try{navigator.vibrate(gul?[60,40,120]:40);}catch(e){}
+  } else floatText(B.W/2,B.H*0.7, blindEyes()?"Слепой — мимо":"Мимо",[200,210,230]);
+  bRenderUI();
+}
+function idolTick(now){
+  if(B.phase!=="plan") return;
+  if(now-B.fightAt>THROW.limit) return bLose("Время вышло");
+  // corrosion from green, once a second
+  if(B.dots.length && now-B.dotAt>1000){
+    B.dotAt=now; let tot=0;
     for(const d of B.dots){
       const z = d.zone!=="body" && d.zone!=="seam" && B.hp[d.zone]>0 ? d.zone : "body";
-      B.hp[z]-=d.per; if(z!=="body") B.hp.body-=d.per*0.25; tot+=d.per; d.left--;
-      chip(z==="seam"?"body":z, 0.02);
+      B.hp[z]-=d.per; if(z!=="body") B.hp.body-=d.per*0.25; tot+=d.per; d.left--; chip(z==="seam"?"body":z, 0.01);
     }
     B.dots=B.dots.filter(d=>d.left>0);
-    const [x,y]=fromIdol(100,190); floatText(x,y,`Разъедание −${Math.round(tot)}`,BCOL.g);
-    bRenderUI(); await sleep(600);
+    const [x,y]=fromIdol(100,190); floatText(x,y,`−${Math.round(tot)}`,BCOL.g);
+    bRenderUI(); if(B.hp.body<=0) return bWin();
   }
-  if(B.hp.body<=0) return bWin();
-  // the idol answers
-  await sleep(300);
-  const gul = B.turn%2===0 && B.hp.mouth>0 && !B.silenced;
-  const dmg = gul ? 35 : 12, acc=idolAcc();
-  bMsg(gul ? "Идол набирает гул…" : "Идол бьёт");
-  B.charge = gul ? 1 : 0.5; await sleep(gul?900:500); B.charge=0;
-  if(Math.random()<acc){
-    B.armor-=dmg; B.shake=gul?1:0.5;
-    floatText(B.W/2,B.H*0.72, gul?`Гул! −${dmg}`:`−${dmg}`,[255,110,90]);
-    bMsg(gul ? "Гул прошёл по броне" : `Идол попал: −${dmg}`);
-    if(navigator.vibrate) try{navigator.vibrate(gul?[60,40,120]:40);}catch(e){}
-  } else {
-    floatText(B.W/2,B.H*0.72,"Мимо",[200,210,230]);
-    bMsg(blindEyes() ? "Слепой идол промахнулся" : "Идол промахнулся");
-  }
-  if(gul===false && B.turn%2===0 && B.silenced) bMsg("Рот заглушён — гула не было");
-  B.silenced=false;
-  bRenderUI();
+  // a regular strike, with a short red warning
+  if(!B.strikeAt && now>B.nextStrike){ B.strikeAt=now; }
+  if(B.strikeAt && now-B.strikeAt>THROW.tel){ B.strikeAt=0; B.nextStrike=now+THROW.strike*(0.8+Math.random()*0.4); idolHits(THROW.hit,false); }
+  // the gul: the mouth glows, then a heavy blow unless you hit the mouth in time
+  if(B.hp.mouth>0 && !B.gulAt && now>B.nextGul){ B.gulAt=now; B.gulCancel=false; bMsg("Рот светится — идол набирает гул. Попади в рот!"); }
+  if(B.gulAt && now-B.gulAt>THROW.gulCharge){ const cancel=B.gulCancel||B.hp.mouth<=0; B.gulAt=0; B.nextGul=now+THROW.gulEvery; if(!cancel) idolHits(THROW.gul,true); }
+  B.charge = B.gulAt ? 0.6+0.4*Math.sin((now-B.gulAt)/90) : B.strikeAt ? 0.5 : 0;
   if(B.armor<=0) return bLose();
-  if(bLeft("w")+bLeft("g")+bLeft("o")<=0) return bLose("Частицы кончились");
-  B.turn++; B.phase="plan"; bRenderUI();
-  setTimeout(()=>{ if(B.phase==="plan") bMsg(`Ход ${B.turn}. Ставь точки обстрела.`); }, 900);
+  if(bLeft("w")+bLeft("g")+bLeft("o")<=0 && !B.balls.length && !B.hold) return bLose("Частицы кончились");
+}
+function holdN(now,h){ h=h||B.hold; if(!h) return 0; return Math.max(0,Math.min(THROW.max, bLeft(B.color), Math.floor(THROW.min+(now-h.t0)/1000*THROW.grow))); }
+function throwBall(){
+  const now=performance.now(), h=B.hold; B.hold=null; if(!h) return;
+  const n=holdN(now,h); if(n<=0) return;
+  bSpend(B.color,n);
+  B.balls.push({x0:B.W/2, y0:handY(), tx:h.x, ty:h.y-h.off, n, c:B.color, t0:now, dur:300+n*7});
+  bRenderUI();
+}
+// the ball in your hand sits just above the bottom panel
+function handY(){ const p=bEl("battle").querySelector(".bPanel"); return p ? Math.max(B.H*0.5, p.offsetTop-44) : B.H*0.84; }
+function drawBall(c,x,y,r,col,n,t){
+  const k=Math.min(60,6+n);
+  for(let i=0;i<k;i++){
+    const a=i*2.399+t*3, rr=r*Math.sqrt((i+.5)/k);
+    c.fillStyle=`rgba(${col},${0.55+0.45*Math.sin(t*6+i)})`;
+    c.fillRect(x+Math.cos(a)*rr-1.2, y+Math.sin(a)*rr-1.2, 2.4, 2.4);
+  }
 }
 function bWin(){
   B.phase="end"; B.result="win"; B.endAt=performance.now();
@@ -1739,6 +1748,13 @@ function bFrame(now){
       c.fillRect(x,y,1.3,1.3);
     }
   }
+  idolTick(now);
+  if(B.phase==="plan"){
+    const hpk=1-Math.max(0,B.hp.body)/PART.body.hp, sway=reduced?0:Math.sin(t*0.55*(1+0.9*hpk))*W*0.13;
+    let gyro=0; if(heading!=null){ if(B.anchor==null) B.anchor=heading; gyro=-(((heading-B.anchor+540)%360)-180)/60*W; }
+    B.ox += (sway+gyro-B.ox)*0.15;
+    if(Math.floor(t*4)!==B.uiTick){ B.uiTick=Math.floor(t*4); bRenderUI(); }
+  }
   let shx=0, shy=0;
   if(B.shake>0){ shx=(Math.random()-.5)*14*B.shake; shy=(Math.random()-.5)*10*B.shake; B.shake=Math.max(0,B.shake-0.04); }
   const G=idolGeom(), fs=G.hgt, sway=reduced?0:Math.sin(t*0.5)*0.03;
@@ -1763,31 +1779,30 @@ function bFrame(now){
   }
   // gul charge glow
   if(B.charge){ const [mx,my]=fromIdol(100,132); const r=c.createRadialGradient(mx,my,0,mx,my,90); r.addColorStop(0,`rgba(255,110,80,${0.35*B.charge})`); r.addColorStop(1,"rgba(255,110,80,0)"); c.fillStyle=r; c.fillRect(mx-90,my-90,180,180); }
-  // volleys
-  for(const bo of B.bolts){
-    const k=Math.min(1,(now-bo.t0)/bo.dur); if(k>=1.35) continue;
-    const n=Math.min(70,8+bo.n), col=BCOL[bo.c];
-    for(let i=0;i<n;i++){
-      const kk=Math.max(0,Math.min(1,k-i*0.006)), e=1-(1-kk)*(1-kk);
-      const x=bo.x0+(bo.tx-bo.x0)*e+Math.sin(i*3.1+t*9)*6*(1-e), y=bo.y0+(bo.ty-bo.y0)*e+Math.cos(i*2.3)*6*(1-e);
-      c.fillStyle=`rgba(${col},${(1-Math.max(0,k-1)/0.35)*0.9})`; c.fillRect(x-1,y-1,2,2);
-    }
+  // flying balls: a small arc, shrinking with distance; resolve on arrival
+  for(const bl of B.balls){
+    const k=Math.min(1,(now-bl.t0)/bl.dur), e=1-(1-k)*(1-k);
+    const x=bl.x0+(bl.tx-bl.x0)*e, y=bl.y0+(bl.ty-bl.y0)*e-Math.sin(k*Math.PI)*40, r=(5+Math.sqrt(bl.n)*3)*(1-0.6*k);
+    drawBall(c,x,y,r,BCOL[bl.c],bl.n,t);
+    if(k>=1 && !bl.done){ bl.done=true; resolveBall(bl); }
   }
-  B.bolts=B.bolts.filter(bo=>now-bo.t0<bo.dur*1.4);
+  B.balls=B.balls.filter(bl=>!bl.done);
   c.globalCompositeOperation="source-over";
-  // marks with hit chance (VATS-style)
   if(B.phase==="plan"){
-    c.font="600 12px Onest, sans-serif"; c.textAlign="center";
-    for(const m of B.marks){
-      const [x,y]=fromIdol(m.x,m.y), col=BCOL[m.c], pc=Math.round(hitChance(zoneAvailable(m.zone)?m.zone:"body",m.c)*100);
-      c.strokeStyle=`rgba(${col},0.95)`; c.lineWidth=1.5;
-      c.beginPath(); c.arc(x,y,14,0,6.283); c.stroke();
-      c.beginPath(); c.moveTo(x-20,y); c.lineTo(x-8,y); c.moveTo(x+8,y); c.lineTo(x+20,y); c.moveTo(x,y-20); c.lineTo(x,y-8); c.moveTo(x,y+8); c.lineTo(x,y+20); c.stroke();
-      c.fillStyle="rgba(8,12,20,.75)"; c.fillRect(x-30,y+22,60,18);
-      c.fillStyle=`rgb(${col})`; c.fillText(`${pc}% ×${m.n}`, x, y+35);
+    // the ball in your hand grows while you hold
+    const n = B.hold ? holdN(now) : 0, r=5+Math.sqrt(Math.max(n,B.hold?3:0))*3;
+    if(B.hold){
+      c.globalCompositeOperation="lighter"; drawBall(c,W/2,handY(),r,BCOL[B.color],n,t); c.globalCompositeOperation="source-over";
+      const rx=B.hold.x, ry=B.hold.y-B.hold.off, sp=8+(3+n*0.28);
+      c.strokeStyle=`rgba(${BCOL[B.color]},.95)`; c.lineWidth=1.5;
+      c.beginPath(); c.arc(rx,ry,sp,0,6.283); c.stroke();
+      c.beginPath(); c.moveTo(rx-sp-8,ry); c.lineTo(rx-sp+3,ry); c.moveTo(rx+sp-3,ry); c.lineTo(rx+sp+8,ry); c.moveTo(rx,ry-sp-8); c.lineTo(rx,ry-sp+3); c.moveTo(rx,ry+sp-3); c.lineTo(rx,ry+sp+8); c.stroke();
+      c.font="600 12px Onest, sans-serif"; c.textAlign="center"; c.fillStyle=`rgb(${BCOL[B.color]})`; c.fillText(`×${n}`, W/2, handY()-r-8);
+    } else {
+      c.strokeStyle="rgba(232,238,248,.35)"; c.setLineDash([3,4]); c.beginPath(); c.arc(W/2,handY(),16,0,6.283); c.stroke(); c.setLineDash([]);
     }
-    // show where the weak spot is when known
     if(B.know && B.hp.body>0){ const [x,y]=fromIdol(100,200); c.strokeStyle="rgba(255,211,77,.35)"; c.setLineDash([3,4]); c.strokeRect(x-12,y-44,24,88); c.setLineDash([]); }
+    if(B.strikeAt){ c.fillStyle="rgba(255,80,60,.10)"; c.fillRect(0,0,W,H); }
   }
   // floating texts
   c.textAlign="center"; c.font="700 16px Onest, sans-serif";
@@ -1800,7 +1815,17 @@ function bFrame(now){
 }
 
 /* ---------- wiring ---------- */
-bEl("bCv").addEventListener("pointerup", e=>{ const r=bEl("bCv").getBoundingClientRect(); bAddMark(e.clientX-r.left, e.clientY-r.top); });
+{ const cvb=bEl("bCv"), pos=e=>{ const r=cvb.getBoundingClientRect(); return [e.clientX-r.left, e.clientY-r.top]; };
+  cvb.addEventListener("pointerdown",e=>{
+    if(B.phase!=="plan") return;
+    if(bLeft(B.color)<=0) return bMsg(`Нет частиц: ${BNAME[B.color]} — выбери другой цвет`);
+    try{ cvb.setPointerCapture(e.pointerId); }catch(_){}
+    const [x,y]=pos(e); B.hold={t0:performance.now(), x, y, off: e.pointerType==="mouse"?0:110};
+  });
+  cvb.addEventListener("pointermove",e=>{ if(B.hold){ const [x,y]=pos(e); B.hold.x=x; B.hold.y=y; } });
+  cvb.addEventListener("pointerup",throwBall);
+  cvb.addEventListener("pointercancel",()=>{ B.hold=null; });
+}
 ["w","g","o"].forEach(c=> bEl("bc_"+c).onclick=()=>{ B.color=c; bRenderUI(); });
 const AMTS=[5,10,20,30,40,60];
 bEl("bAmtMinus").onclick=()=>{ const i=AMTS.indexOf(B.amount); B.amount=AMTS[Math.max(0,i-1)]; bRenderUI(); };
@@ -1811,11 +1836,13 @@ bEl("bKnow").onchange=()=>{ B.know=bEl("bKnow").checked; bRenderUI(); };
 bEl("bStart").onclick=()=>{
   if(B.armorSet<=0) return bMsg("Без брони первый же гул тебя выбьет. Добавь хотя бы 10.");
   B.armor=B.armorMax=bSpendAny(B.armorSet);
-  B.phase="plan"; bRenderUI();
-  bMsg(B.know ? "Шов на груди известен — бей туда. Тапни по идолу, чтобы поставить точку." : "Тапни по идолу, чтобы поставить точку обстрела. Купол закрывает глаза.");
+  const now=performance.now();
+  Object.assign(B,{phase:"plan", fightAt:now, dotAt:now, nextStrike:now+3000, nextGul:now+9000, anchor:null});
+  bRenderUI();
+  bMsg("Держи палец — ком растёт. Отпусти — бросок в прицел. Большой ком бьёт сильнее, но медленнее и мажет."+(B.know?" Шов на груди — слабое место.":" Купол закрывает глаза."));
 };
-bEl("bFight").onclick=()=>bFightRound();
-bEl("bClose").onclick=()=>{ if(B.phase==="resolve") return; if(B.phase==="plan" && !confirmRetreat()) return; closeBattle(); };
+
+bEl("bClose").onclick=()=>{ if(B.phase==="plan") confirmRetreat(); closeBattle(); };
 function confirmRetreat(){ bMsg("Отступил. Потраченное не вернуть."); return true; }
 bEl("bEndBtn").onclick=()=>{
   const win=B.result==="win", g=B.gi!=null?golds[B.gi]:null, gi=B.gi, tr=B.training;
