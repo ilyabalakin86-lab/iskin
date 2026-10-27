@@ -9,6 +9,8 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 <link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;700&family=Unbounded:wght@500&display=swap" rel="stylesheet">
+<script type="importmap">{"imports":{"three":"./vendor/three.module.min.js"}}</script>
+<script type="module" src="beast.js"></script>
 <style>
 :root{
   --ink:#16202d; --ink2:#1e2b3c; --line:#2d3d53; --text:#e8eef8; --mute:#8b9ab0;
@@ -84,6 +86,13 @@ canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;displa
 .ar.ready .arFocus{opacity:0}
 .ar.far .arForm{display:none}
 .ar.far .arFocus{opacity:1;font-size:16px;color:var(--au)}
+.ar.paper{background:#ece6da}
+.ar.paper video{opacity:0}
+.ar.paper .arFocus{color:rgba(30,28,26,.75)}
+.ar.paper.far .arFocus{color:#2458ff}
+.ar.paper .arForm{background:rgba(248,245,238,.93);border-color:rgba(36,88,255,.45);color:#1e1c1a}
+.ar.paper input{background:#fff;color:#1e1c1a;border-color:rgba(30,28,26,.25)}
+.ar.paper .msg{color:rgba(30,28,26,.6)}
 .edit-on{color:var(--au)!important;border-color:var(--au)!important}
 .battle{position:absolute;inset:0;z-index:9;display:none;background:#0c1220;overflow:hidden}
 .battle.open{display:block}
@@ -1144,9 +1153,11 @@ function frame(now){
   const dt = Math.min(0.1,(now-lastT)/1000); lastT=now;
   simStep(dt);
   if(follow && player){ cam.x += (player.x-cam.x)*0.15; cam.y += (player.y-cam.y)*0.15; }
-  syncGL();
-  ctx.setTransform(DPR,0,0,DPR,0,0);
-  mode==="map" ? drawMap(now) : drawCompass(now);
+  if(!AR.open && !B.open){          // the map is hidden under a portal or a battle: don't draw it
+    syncGL();
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+    mode==="map" ? drawMap(now) : drawCompass(now);
+  }
   requestAnimationFrame(frame);
 }
 
@@ -1239,6 +1250,120 @@ function buildIdol(){
   }
   return pts;
 }
+/* ---------- paper portal: the guardian is a living animal printed in halftone ink ----------
+   Look from the references: the world (camera) is stippled grey on warm paper, the animal is vermilion
+   halftone with a misregistered blue plate and motion ghosts, and a thin blue tracking hull with an ID tag
+   follows it, as if a machine had found it. The 3D animal comes from beast.js (window.BEAST). */
+const PAPER={bg:[236,230,218], ink:[30,28,26], red:[228,70,34], blue:[36,88,255]};
+const INK={cam:document.createElement("canvas"), seed:new Float32Array(0), trail:[], tick:0};
+function inkSeed(n){ if(INK.seed.length<n){ INK.seed=new Float32Array(n); for(let i=0;i<n;i++) INK.seed[i]=Math.random(); } return INK.seed; }
+function beastKindFor(i){
+  const g=golds[i], key=String(g&&(g.wid||g.place)||i); let h=7;
+  for(const ch of key) h=(h*31+ch.charCodeAt(0))|0;
+  h=Math.abs(h); const ks=window.BEAST?BEAST.kinds:["flamingo"];
+  return {kind:ks[h%ks.length], id:1000+h%9000};
+}
+// the camera feed, re-printed as grey stipple on paper
+function paperCamera(c0,W,H,t){
+  const bg=INK.bg||(INK.bg=document.createElement("canvas"));
+  if(bg.width!==W||bg.height!==H){ bg.width=W; bg.height=H; INK.bgAt=0; }
+  const now=performance.now();
+  if(now-(INK.bgAt||0)<120){ c0.drawImage(bg,0,0,W,H); return; }
+  INK.bgAt=now;
+  const c=bg.getContext("2d");
+  c.fillStyle=`rgb(${PAPER.bg})`; c.fillRect(0,0,W,H);
+  const cell=7, cols=Math.ceil(W/cell), rows=Math.ceil(H/cell), v=$("arVideo"), sd=inkSeed(cols*rows*2+2);
+  let d=null;
+  if(v.readyState>=2 && v.videoWidth){
+    const cv=INK.cam; if(cv.width!==cols||cv.height!==rows){ cv.width=cols; cv.height=rows; INK.cx=null; }
+    const x=INK.cx||(INK.cx=cv.getContext("2d",{willReadFrequently:true}));
+    const s=Math.max(cols/v.videoWidth, rows/v.videoHeight), w=v.videoWidth*s, h=v.videoHeight*s;
+    x.drawImage(v,(cols-w)/2,(rows-h)/2,w,h); d=x.getImageData(0,0,cols,rows).data;
+  }
+  // auto exposure: the average tone prints as light stipple, only shadows and edges go dense
+  let m=0.5, sdv=0.2;
+  if(d){ let a=0,b=0,n=cols*rows; for(let p=0;p<n*4;p+=4){ const l=(d[p]*0.3+d[p+1]*0.59+d[p+2]*0.11)/255; a+=l; b+=l*l; } m=a/n; sdv=Math.sqrt(Math.max(0,b/n-m*m)); }
+  c.fillStyle=`rgba(${PAPER.ink},0.5)`; c.beginPath();
+  for(let j=0;j<rows;j++) for(let i=0;i<cols;i++){
+    const k=j*cols+i; let dark;
+    if(d){ const p=k*4, l=(d[p]*0.3+d[p+1]*0.59+d[p+2]*0.11)/255; dark=Math.min(1,Math.max(0,0.22-(l-m)/(sdv+0.05)*0.2)); }
+    else dark=0.10+0.09*Math.sin(i*0.23+t*0.2)*Math.cos(j*0.19-t*0.13);   // no camera: a quiet paper grain
+    if(dark<0.07) continue;
+    const r=cell*0.5*Math.sqrt(dark), x=(i+0.15+0.7*sd[k*2])*cell, y=(j+0.15+0.7*sd[k*2+1])*cell;
+    c.moveTo(x+r,y); c.arc(x,y,r,0,6.283);
+  }
+  c.fill();
+  c0.drawImage(bg,0,0,W,H);
+}
+function hull(pts){
+  // monotone chain over [x,y] pairs
+  pts.sort((a,b)=>a[0]-b[0]||a[1]-b[1]);
+  const cr=(o,a,b)=>(a[0]-o[0])*(b[1]-o[1])-(a[1]-o[1])*(b[0]-o[0]), lo=[], up=[];
+  for(const p of pts){ while(lo.length>1&&cr(lo[lo.length-2],lo[lo.length-1],p)<=0) lo.pop(); lo.push(p); }
+  for(let i=pts.length-1;i>=0;i--){ const p=pts[i]; while(up.length>1&&cr(up[up.length-2],up[up.length-1],p)<=0) up.pop(); up.push(p); }
+  return lo.slice(0,-1).concat(up.slice(0,-1));
+}
+function dotsPath(c,arr,dx,dy){ c.beginPath(); for(let i=0;i<arr.length;i+=3){ const x=arr[i]+dx, y=arr[i+1]+dy, r=arr[i+2]; c.moveTo(x+r,y); c.arc(x,y,r,0,6.283); } }
+function drawPaperPortal(c,W,H,t,dt,cx,cy,R,sol,far,appear,breathe){
+  const sm=x=>x<=0?0:x>=1?1:x*x*(3-2*x);
+  paperCamera(c,W,H,t);
+  c.globalCompositeOperation="multiply";
+  // the ring, printed: fine ink dust turning slowly
+  const ringScale=R*breathe*(1+sol*1.4)*(0.6+0.4*appear), ringA=appear*(sol?Math.max(0,1-sol/1.4):1)*(far?0.35:0.8);
+  c.fillStyle=`rgba(${PAPER.ink},${0.55*ringA})`; c.beginPath();
+  for(const p of AR.ring){
+    const a=p.a+t*0.12*(p.r>1?1:-1), rr=ringScale*p.r+Math.sin(t*2+p.ph)*R*0.012, s=p.s*0.55;
+    const x=cx+Math.cos(a)*rr, y=cy+Math.sin(a)*rr*0.98; c.moveTo(x+s,y); c.arc(x,y,s,0,6.283);
+  }
+  c.fill();
+  // the animal
+  // the 3D pass (render + GPU read-back) runs at most ~30 times a second; in between the last frame is reused
+  let f=INK.last;
+  if(window.BEAST && (!f || t-INK.lastT>0.033)){ f=BEAST.frame(t,t-(INK.lastT||t),0); INK.lastT=t; if(f) INK.last={data:f.data.slice(), size:f.size}; f=INK.last; }
+  if(f){
+    const N=f.size, ST=2, fs=Math.min(W*1.05, R*(far?2.4:3.0)), cell=fs/N*ST, x0=cx-fs/2, y0=cy-fs/2, sd=inkSeed(N*N*2+2), dd=f.data;
+    const dots=[], solid=[];
+    for(let j=0;j<N;j+=ST) for(let i=0;i<N;i+=ST){
+      const p=(j*N+i)*4; if(Math.max(dd[p+3],dd[p+7],dd[p+N*4+3],dd[p+N*4+7])<50) continue;   // any pixel of the 2×2 block, so thin necks and legs survive
+      const k=j*N+i, del=sd[k]*0.5, e=sm((AR.focus-del)/(1-del));
+      const l=dd[p]/255, dark=0.3+0.7*(1-l);
+      let x=x0+(i+0.25+0.5*sd[k*2+1])*fs/N, y=y0+(j+0.25+0.5*sd[k+1])*fs/N;
+      // until you look long enough the dots hang scattered in the air, then condense into the animal
+      x=(W/2+AR.ox+(sd[k+7]-.5)*W*1.1)*(1-e)+x*e; y=(H*0.42+AR.oy+(sd[k+11]-.5)*H*0.9)*(1-e)+y*e;
+      if(sol){
+        const ph=sd[k+3]*6.283, kk=Math.min(1,sol/0.8);
+        x+=Math.cos(ph)*kk*R*0.4*sd[k+5]; y+=Math.sin(ph)*kk*R*0.4*sd[k+5];
+        if(sol>0.8){ const m=Math.min(1,(sol-0.8)/0.9), q=m*m; x+=(W/2-x)*q; y+=(H+40-y)*q; }
+      }
+      const r=cell*0.5*Math.sqrt(dark)*(0.35+0.65*e)*1.15;
+      dots.push(x,y,r); if(e>0.85 && !sol) solid.push([x,y]);
+    }
+    const fade=Math.min(1,t/0.8)*(sol>1.5?Math.max(0,1-(sol-1.5)/0.4):1);
+    // motion ghosts: the last few frames, fainter and fainter
+    for(let n=0;n<INK.trail.length;n++){ c.fillStyle=`rgba(${PAPER.red},${(0.05+0.05*n)*fade})`; dotsPath(c,INK.trail[n],0,0); c.fill(); }
+    if(++INK.tick%4===0){ INK.trail.push(dots.slice()); if(INK.trail.length>4) INK.trail.shift(); }
+    // misregistered blue plate, then the red
+    c.fillStyle=`rgba(${PAPER.blue},${0.42*fade})`; dotsPath(c,dots,2.6,-1.2); c.fill();
+    c.fillStyle=`rgba(${PAPER.red},${0.95*fade})`; dotsPath(c,dots,0,0); c.fill();
+    c.globalCompositeOperation="source-over";
+    // the tracker found it: hull + tag
+    if(solid.length>20 && AR.focus>0.55){
+      const a=Math.min(1,(AR.focus-0.55)/0.25)*fade, hp=hull(solid);
+      c.strokeStyle=`rgba(${PAPER.blue},${0.9*a})`; c.lineWidth=1; c.beginPath();
+      hp.forEach(([x,y],i)=>i?c.lineTo(x,y):c.moveTo(x,y)); c.closePath(); c.stroke();
+      let mx=1e9, my=1e9, My=-1e9; for(const [x,y] of hp){ if(x<mx)mx=x; if(y<my)my=y; if(y>My)My=y; }
+      const tag=`ID ${AR.beastId}`; c.font="600 10px ui-monospace, Menlo, monospace"; const tw=c.measureText(tag).width+8;
+      c.globalAlpha=a; c.fillStyle=`rgb(${PAPER.blue})`; mx=Math.max(4,Math.min(W-tw-120,mx)); c.fillRect(mx,my-16,tw,13);
+      c.fillStyle="#fff"; c.textAlign="left"; c.fillText(tag,mx+4,my-6);
+      c.fillStyle=`rgb(${PAPER.blue})`; c.font="10px ui-monospace, Menlo, monospace";
+      c.fillText(`${AR.beastName||""} ${(0.80+0.19*AR.focus).toFixed(2)}`, mx+tw+5, my-6);
+      c.fillText(`lyten ${String(solid.length).padStart(4,"0")} · ${Math.round(t*10)%1000}`, mx, My+13);
+      c.globalAlpha=1;
+    }
+  }
+  c.globalCompositeOperation="source-over";
+}
+
 function buildPortal(){
   const R=rng(99);
   AR.ring=[]; for(let i=0;i<1100;i++){ const a=R()*6.283, r=1+(R()+R()+R()-1.5)*0.07; AR.ring.push({a, r, w:0.15+R()*0.5, ph:R()*6.283, s:0.6+R()*1.6}); }
@@ -1256,6 +1381,10 @@ async function openAR(i, mode){
   if(!AR.ring.length) buildPortal();
   AR.face = B.pts || (B.pts=buildHelmetIdol());   // the domed idol is the face of every portal
   AR.mode = mode || "portal"; AR.distTxt="";
+  // the guardian is a living animal when three.js is loaded; otherwise the particle idol as before
+  AR.paper = !!window.BEAST; AR.beastName=""; INK.trail=[]; INK.last=null; INK.lastT=0;
+  $("ar").classList.toggle("paper", AR.paper);
+  if(AR.paper){ const bk=beastKindFor(i); AR.beastId=bk.id; BEAST.show(bk.kind).then(n=>{ AR.beastName=n; }).catch(()=>{ AR.paper=false; $("ar").classList.remove("paper"); }); }
   $("ar").classList.toggle("far", AR.mode==="far");
   $("arFocus").textContent = AR.mode==="far" ? "" : "Смотри на портал — он проявляется от твоего внимания";
   AR.gi=i; AR.open=true; AR.solvedAt=0; AR.t0=performance.now(); AR.anchor=null;
@@ -1286,14 +1415,15 @@ function closeAR(){
 function arResize(){
   AR.cv=$("arCv"); AR.ctx=AR.cv.getContext("2d");
   AR.W=AR.cv.clientWidth; AR.H=AR.cv.clientHeight;
-  AR.cv.width=AR.W*DPR; AR.cv.height=AR.H*DPR;
+  AR.dpr = AR.paper ? 1 : DPR;
+  AR.cv.width=AR.W*AR.dpr; AR.cv.height=AR.H*AR.dpr;
 }
 window.addEventListener("resize", ()=>{ if(AR.open) arResize(); });
 
 function arFrame(now){
   if(!AR.open) return;
   const c=AR.ctx, W=AR.W, H=AR.H, t=(now-AR.t0)/1000;
-  c.setTransform(DPR,0,0,DPR,0,0);
+  c.setTransform(AR.dpr,0,0,AR.dpr,0,0);
   c.clearRect(0,0,W,H);
   const far = AR.mode==="far", gg=golds[AR.gi];
   const dist = (player && gg) ? Math.hypot(gg.x-player.x, gg.y-player.y) : 0;
@@ -1331,6 +1461,8 @@ function arFrame(now){
   const appear = sm(Math.min(1,t/1.0)) * (0.25+0.75*sm(AR.focus));
   const breathe = reduced?1:1+0.025*Math.sin(t*1.7);
 
+  if(AR.paper) drawPaperPortal(c,W,H,t,dt,cx,cy,R,sol,far,appear,breathe);
+  else {
   c.globalCompositeOperation="lighter";
   // spores in the air around you — they drift past as you turn the phone
   const hd = heading ?? 0, pt = pitch ?? 80;
@@ -1405,6 +1537,7 @@ function arFrame(now){
       c.fillStyle="#fff"; c.fillRect(x-1.5,y-1.5,3,3);
     }
     c.globalAlpha=1;
+  }
   }
   // final flash, then back to the map
   if(sol>1.5){ const f=Math.max(0,1-(sol-1.5)/0.6); c.fillStyle=`rgba(255,240,200,${f*0.35})`; c.fillRect(0,0,W,H); }
@@ -2344,6 +2477,8 @@ function sndUpdate(){
 }
 document.addEventListener("pointerdown", sndInit, {passive:true});
 setInterval(sndUpdate, 120);
+window.__openAR=(i,m)=>openAR(i,m); window.__golds=()=>golds.map(g=>g.type);
+window.__focus=v=>{AR.focus=v;}; window.__ar=()=>({focus:AR.focus, ox:AR.ox, oy:AR.oy, paper:AR.paper, name:AR.beastName, W:AR.W, H:AR.H});
 window.__snd=()=>({ctx:!!SND.ctx, state:SND.ctx&&SND.ctx.state, level:+SND.level.toFixed(3), f0:SND.f0, on:SND.on});
 $("soundBtn").textContent = SND.on ? "Звук порталов: вкл" : "Звук порталов: выкл";
 $("soundBtn").onclick=()=>{ SND.on=!SND.on; store.set("iskin.sound",SND.on); $("soundBtn").textContent = SND.on ? "Звук порталов: вкл" : "Звук порталов: выкл"; if(SND.on) sndInit(); };
