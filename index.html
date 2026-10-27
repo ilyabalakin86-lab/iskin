@@ -194,6 +194,7 @@ canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;displa
       <div class="row">
         <button class="btn" id="simBtn">Симуляция прогулки</button>
         <button class="btn" id="compassPerm">Включить компас</button>
+        <button class="btn" id="soundBtn">Звук порталов: вкл</button>
       </div>
       <p>В симуляции игрок сам идёт по тропе. Тап по карте уводит его в сторону — так можно собрать зелёный Lyten.</p>
 
@@ -1692,6 +1693,7 @@ function idolTick(now){
   if(!B.strikeAt && now>B.nextStrike){ B.strikeAt=now; }
   if(B.strikeAt && now-B.strikeAt>THROW.tel){ B.strikeAt=0; B.nextStrike=now+THROW.strike*(0.8+Math.random()*0.4); idolHits(THROW.hit,false); }
   // the gul: the mouth glows, then a heavy blow unless you hit the mouth in time
+  if(B.gulAt) SND.swell=Math.min(1,SND.swell+0.03);         // the choir swells while the mouth glows
   if(B.hp.mouth>0 && !B.gulAt && now>B.nextGul){ B.gulAt=now; B.gulCancel=false; bMsg("Рот светится — идол набирает гул. Попади в рот!"); }
   if(B.gulAt && now-B.gulAt>THROW.gulCharge){ const cancel=B.gulCancel||B.hp.mouth<=0; B.gulAt=0; B.nextGul=now+THROW.gulEvery; if(!cancel) idolHits(THROW.gul,true); }
   B.charge = B.gulAt ? 0.6+0.4*Math.sin((now-B.gulAt)/90) : B.strikeAt ? 0.5 : 0;
@@ -2271,6 +2273,80 @@ pk.addEventListener("pointerdown",e=>{ e.preventDefault(); pocket.holdStart=perf
   pocket.holdT=setInterval(()=>{ const k=Math.min(1,(performance.now()-pocket.holdStart)/2000); $("pocketHold").style.clipPath=`inset(${(1-k)*100}% 0 0 0)`;
     if(k>=1){ holdEnd(); pocket.on=false; pk.classList.remove("open"); toast(`За прогулку: +${pocket.n} частиц`); } },50); });
 ["pointerup","pointercancel","pointerleave"].forEach(ev=>pk.addEventListener(ev,holdEnd));
+
+/* ---------- portal sound: a synthesised ritual chant ----------
+   Reference: a low ritual choir — a sub drone under everything, throat-singing overtones gliding in the
+   1–2 kHz band, breath/rain noise on top, slow swells, no hits. Built live with WebAudio, no files.
+   Loudness follows distance to the nearest unsolved portal; inside a portal or a battle it is full.
+   Battle portals sing lower. The idol's "гул" swells the choir. */
+const SND={ctx:null, on:true, master:null, voice:null, f0:55, level:0, target:0, swell:0};
+try{ const v=store.get("iskin.sound"); if(v===false) SND.on=false; }catch(e){}
+function sndInit(){
+  if(SND.ctx || !SND.on) { if(SND.ctx && SND.ctx.state==="suspended") SND.ctx.resume(); return; }
+  let ctx; try{ ctx = (typeof actx!=="undefined" && actx) || new (window.AudioContext||window.webkitAudioContext)(); }catch(e){ return; }
+  SND.ctx=ctx; ctx.resume();
+  const master=ctx.createGain(); master.gain.value=0; master.connect(ctx.destination); SND.master=master;
+  // a long soft reverb tail made from decaying noise
+  const conv=ctx.createConvolver(), len=ctx.sampleRate*3.5, ir=ctx.createBuffer(2,len,ctx.sampleRate);
+  for(let c=0;c<2;c++){ const d=ir.getChannelData(c); for(let i=0;i<len;i++) d[i]=(Math.random()*2-1)*Math.pow(1-i/len,2.4); }
+  conv.buffer=ir; const wet=ctx.createGain(); wet.gain.value=0.55; conv.connect(wet); wet.connect(master);
+  const bus=ctx.createGain(); bus.connect(master); bus.connect(conv);
+  // 1) sub drone
+  const sub=ctx.createOscillator(), sub2=ctx.createOscillator(), subG=ctx.createGain();
+  sub.type="sine"; sub2.type="sine"; subG.gain.value=0.55; sub.connect(subG); sub2.connect(subG); subG.connect(bus);
+  // 2) the chanting voices: detuned saws through vowel formants
+  const vox=ctx.createGain(); vox.gain.value=0.22;
+  const saws=[0,1,2].map(i=>{ const o=ctx.createOscillator(); o.type="sawtooth"; o.detune.value=(i-1)*9; o.connect(vox); o.start(); return o; });
+  const forms=[0,1,2].map(()=>{ const f=ctx.createBiquadFilter(); f.type="bandpass"; f.Q.value=9; vox.connect(f); f.connect(bus); return f; });
+  // 3) throat-singing whistle: a very narrow band riding one harmonic, gliding between harmonics
+  const whistle=ctx.createBiquadFilter(); whistle.type="bandpass"; whistle.Q.value=38;
+  const wG=ctx.createGain(); wG.gain.value=2.2; vox.connect(whistle); whistle.connect(wG); wG.connect(bus);
+  // 4) breath and rain
+  const nb=ctx.createBuffer(1,ctx.sampleRate*2,ctx.sampleRate), nd=nb.getChannelData(0); for(let i=0;i<nd.length;i++) nd[i]=Math.random()*2-1;
+  const noise=ctx.createBufferSource(); noise.buffer=nb; noise.loop=true;
+  const nf=ctx.createBiquadFilter(); nf.type="bandpass"; nf.frequency.value=3200; nf.Q.value=0.6;
+  const nG=ctx.createGain(); nG.gain.value=0.05; noise.connect(nf); nf.connect(nG); nG.connect(bus); noise.start();
+  sub.start(); sub2.start();
+  SND.voice={sub,sub2,saws,forms,whistle,vox};
+  sndPitch(SND.f0,true);
+  // slow life: vowels morph, the whistle walks between harmonics, the choir breathes
+  const VOW=[[600,1040,2250],[400,750,2400],[350,600,2700],[300,870,2240],[500,1700,2500]];
+  const morph=()=>{
+    if(!SND.ctx) return; const t=ctx.currentTime, v=VOW[Math.floor(Math.random()*VOW.length)];
+    forms.forEach((f,i)=>f.frequency.setTargetAtTime(v[i],t,0.9));
+    const h=18+Math.floor(Math.random()*16); whistle.frequency.setTargetAtTime(SND.f0*h,t,0.6);
+    vox.gain.setTargetAtTime(0.16+Math.random()*0.12,t,1.5);
+    setTimeout(morph, 1800+Math.random()*2600);
+  };
+  morph();
+}
+function sndPitch(f0,now){
+  SND.f0=f0; if(!SND.voice) return;
+  const t=SND.ctx.currentTime, k=now?0.01:1.2, V=SND.voice;
+  V.sub.frequency.setTargetAtTime(f0/2,t,k); V.sub2.frequency.setTargetAtTime(f0/2+0.35,t,k);
+  V.saws.forEach(o=>o.frequency.setTargetAtTime(f0,t,k));
+}
+// called every frame: how loud and how low the chant should be right now
+function sndUpdate(){
+  if(!SND.ctx || !SND.master) return;
+  let vol=0, f0=55;
+  if(!SND.on){ vol=0; }
+  else if(typeof B!=="undefined" && B.open){ vol=0.55; f0=41; }
+  else if(AR.open){ const g=golds[AR.gi]; vol=0.5; f0 = g && g.type==="battle" ? 41 : 55; }
+  else if(player){
+    let best=null, bd=Infinity;
+    for(const g of golds){ if(g.solved) continue; const d=Math.hypot(g.x-player.x,g.y-player.y); if(d<bd){bd=d;best=g;} }
+    if(best && bd<300){ const k=1-bd/300; vol=0.45*k*k; f0 = best.type==="battle" ? 41 : 55; }
+  }
+  vol += SND.swell*0.35; SND.swell=Math.max(0,SND.swell-0.01);
+  if(Math.abs(vol-SND.level)>0.005){ SND.level=vol; SND.master.gain.setTargetAtTime(vol, SND.ctx.currentTime, 0.4); }
+  if(f0!==SND.f0) sndPitch(f0);
+}
+document.addEventListener("pointerdown", sndInit, {passive:true});
+setInterval(sndUpdate, 120);
+window.__snd=()=>({ctx:!!SND.ctx, state:SND.ctx&&SND.ctx.state, level:+SND.level.toFixed(3), f0:SND.f0, on:SND.on});
+$("soundBtn").textContent = SND.on ? "Звук порталов: вкл" : "Звук порталов: выкл";
+$("soundBtn").onclick=()=>{ SND.on=!SND.on; store.set("iskin.sound",SND.on); $("soundBtn").textContent = SND.on ? "Звук порталов: вкл" : "Звук порталов: выкл"; if(SND.on) sndInit(); };
 
 /* keep screen awake while walking */
 async function wake(){ try{ if("wakeLock" in navigator) await navigator.wakeLock.request("screen"); }catch(e){} }
