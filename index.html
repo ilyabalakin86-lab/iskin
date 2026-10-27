@@ -2279,6 +2279,15 @@ document.addEventListener("visibilitychange", ()=>{ if(document.visibilityState=
 /* ---------- boot ---------- */
 resize();
 load();
+// the open world is now the main game: move older saves into it once, keeping what was collected
+try{
+  if(!store.get("iskin.worldDefault") && route.id!=="world"){
+    const keep=Object.assign({},stats);
+    route=makeWorldRoute(W_HOME.lat,W_HOME.lon); generate(); player={x:0,y:0}; worldLoad();
+    stats=keep; save();
+  }
+  store.set("iskin.worldDefault",1);
+}catch(e){}
 buildContours();
 player = {x:samples[0].x, y:samples[0].y};
 cam.x=player.x; cam.y=player.y;
