@@ -11,6 +11,10 @@ const KINDS = {
   parrot:   { file: "models/parrot.glb",   name: "Попугай",  fly: true,  speed: 1.2 },
   horse:    { file: "models/horse.glb",    name: "Конь",     fly: false, speed: 1.0 },
   giant:    { build: buildGiant,             name: "Великан",  giant: true, cam: 4.1 },
+  // the three guardians as sculpted models (Higgsfield: Ilya's sketches → clay renders → Meshy image-to-3D)
+  g_giant:  { file: "https://d8j0ntlcm91z4.cloudfront.net/user_3ANnAU4Au9rBJHD9BZOzXV4W1SZ/hf_20261102_203121_60fece35-389d-47a3-932e-c1740cce7a9f.glb", name: "Великан", guard: "giant", cam: 4.0 },
+  g_idol:   { file: "https://d8j0ntlcm91z4.cloudfront.net/user_3ANnAU4Au9rBJHD9BZOzXV4W1SZ/hf_20261102_203122_885bf255-54e6-48a8-a2a4-e4d9d742c0a8.glb",  name: "Идол",    guard: "idol",  cam: 3.9 },
+  g_sun:    { file: "https://d8j0ntlcm91z4.cloudfront.net/user_3ANnAU4Au9rBJHD9BZOzXV4W1SZ/hf_20261102_203124_d85494ad-ebaa-4fbe-b940-f5bc07211dfe.glb",   name: "Солнце",  guard: "sun",   cam: 3.8 },
 };
 
 /* The giant guardian (after Ilya's design frame): a hulking figure with huge rounded pauldrons, a small head,
@@ -100,8 +104,9 @@ function load(kind) {
     root.scale.setScalar(k); root.position.set(-c.x * k, -c.y * k, -c.z * k);
     const pivot = new THREE.Group(); pivot.add(root);
     const mixer = new THREE.AnimationMixer(root);
-    if (gltf.animations[0]) mixer.clipAction(gltf.animations[0]).setDuration(KINDS[kind].fly ? 1.2 : 0.9).play();
-    res({ kind, pivot, mixer, name: KINDS[kind].name });
+    if (gltf.animations[0]) { const act = mixer.clipAction(gltf.animations[0]); if (!KINDS[kind].guard) act.setDuration(KINDS[kind].fly ? 1.2 : 0.9); act.play(); }
+    let headBone = null; root.traverse(o => { if (o.isBone && !headBone && /head/i.test(o.name)) headBone = o; });
+    res({ kind, pivot, mixer, headBone, scale: k, name: KINDS[kind].name });
   }, undefined, rej));
   return cache[kind];
 }
@@ -111,6 +116,23 @@ function load(kind) {
 function frame(t, dt, yaw) {
   if (!cur) return null;
   const K = KINDS[cur.kind];
+  if (K.guard) {
+    // sculpted guardians: they stay in place, breathe and turn slowly
+    camera.position.set(0, 0, K.cam); camera.lookAt(0, 0, 0);
+    cur.mixer.update(dt);
+    if (K.guard === "sun") cur.pivot.rotation.set(Math.sin(t * 0.21) * 0.12, Math.sin(t * 0.27) * 0.28 + yaw, t * 0.06);
+    else if (K.guard === "idol") cur.pivot.rotation.set(Math.sin(t * 0.19) * 0.06, Math.sin(t * 0.4) * 0.35 + yaw, 0);
+    else cur.pivot.rotation.set(0, Math.sin(t * 0.17) * 0.3 + yaw, 0);
+    cur.pivot.position.y = K.guard === "giant" ? Math.sin(t * 1.1) * 0.01 : Math.sin(t * 0.8) * 0.02;
+    renderer.render(scene, camera);
+    const out = readBack();
+    if (cur.headBone) {
+      cur.pivot.updateMatrixWorld(true);
+      const v = new THREE.Vector3(), m = {}, P = (x, y, z, key) => { v.set(x, y, z); cur.headBone.localToWorld(v); v.project(camera); m[key] = [(v.x + 1) / 2 * SIZE, (1 - v.y) / 2 * SIZE]; };
+      P(0, 0, 0, "head"); out.marks = m;
+    }
+    return out;
+  }
   if (K.giant) {
     // the giant stands still, breathes and looks around, turning slightly towards you
     camera.position.set(0, 0.05, K.cam); camera.lookAt(0, 0.0, 0);
@@ -151,5 +173,5 @@ async function show(kind) {
   return b.name;
 }
 
-window.BEAST = { ready: true, kinds: Object.keys(KINDS).filter(k => !KINDS[k].giant), names: Object.fromEntries(Object.entries(KINDS).map(([k, v]) => [k, v.name])), load, show, frame, size: SIZE };
+window.BEAST = { ready: true, kinds: Object.keys(KINDS).filter(k => !KINDS[k].giant && !KINDS[k].guard), guards: { giant: "g_giant", idol: "g_idol", sun: "g_sun" }, names: Object.fromEntries(Object.entries(KINDS).map(([k, v]) => [k, v.name])), load, show, frame, size: SIZE };
 window.dispatchEvent(new Event("beast-ready"));

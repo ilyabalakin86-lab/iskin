@@ -1259,6 +1259,14 @@ function buildIdol(){
 const PAPER={bg:[236,230,218], ink:[30,28,26], red:[228,70,34], blue:[36,88,255]};
 const INK={cam:document.createElement("canvas"), seed:new Float32Array(0), trail:[], tick:0};
 function inkSeed(n){ if(INK.seed.length<n){ INK.seed=new Float32Array(n); for(let i=0;i<n;i++) INK.seed[i]=Math.random(); } return INK.seed; }
+function showGuard(g){
+  AR.modelReady=false;
+  const key=BEAST.guards&&BEAST.guards[g];
+  const fallback=()=>{ if(g==="giant") BEAST.show("giant"); };
+  if(!key) return fallback();
+  if(g==="giant") BEAST.show("giant");          // the hand-made giant stands in while the sculpted one loads
+  BEAST.show(key).then(n=>{ if(AR.guard===g){ AR.modelReady=true; AR.beastName=n; GLOW.last=null; } }).catch(fallback);
+}
 function beastKindFor(i){
   const g=golds[i], key=String(g&&(g.wid||g.place)||i); let h=7;
   for(const ch of key) h=(h*31+ch.charCodeAt(0))|0;
@@ -1390,8 +1398,9 @@ function drawGlowPortal(c,W,H,t,dt,cx,cy,R,sol,far,appear,breathe){
   const hy=H*0.42+(pt-80)/50*H;
   c.globalCompositeOperation="lighter";
   glowGround(c,W,H,t,hy,hd,appear,fade, guard==="idol" ? [255,200,120] : [190,214,255], guard==="idol" ? [255,240,190] : [255,214,140]);
-  if(guard==="sun") glowSun(c,W,H,t,cx,cy,R,sol,far,appear,breathe,fade);
-  else if(guard==="giant") glowGiant(c,W,H,t,dt,cx,cy,R,sol,far,hy);
+  // sculpted model when it has loaded; the hand-made versions stand in until then (or offline)
+  if(guard==="giant" || AR.modelReady) glowModel(c,W,H,t,dt,cx,cy,R,sol,far,hy,guard);
+  else if(guard==="sun") glowSun(c,W,H,t,cx,cy,R,sol,far,appear,breathe,fade);
   else glowIdol(c,W,H,t,cx,cy,R,sol,far);
   // sparks shed by the guardian drift up and fade
   for(const p of GLOW.shed){ p.x+=p.vx*dt; p.y+=p.vy*dt; p.life-=dt*0.7; c.fillStyle=`rgba(${p.col||"200,220,255"},${Math.max(0,p.life)*0.8})`; c.fillRect(p.x-1,p.y-1,2,2); }
@@ -1454,12 +1463,12 @@ function glowSun(c,W,H,t,cx,cy,R,sol,far,appear,breathe,fade){
 }
 // guardian 2 — the giant: a 3D figure (beast.js) redrawn as glowing points, glassy inside, bright on its
 // silhouette and seams; eyes and a third eye burn; its legs pour out into streams of light over the ground
-function glowGiant(c,W,H,t,dt,cx,cy,R,sol,far,hy){
+function glowModel(c,W,H,t,dt,cx,cy,R,sol,far,hy,guard){
   const sm=x=>x<=0?0:x>=1?1:x*x*(3-2*x);
   let fr=GLOW.last;
   if(window.BEAST && (!fr || t-GLOW.lastT>0.033)){ const g=BEAST.frame(t,t-(GLOW.lastT||t),0); GLOW.lastT=t; if(g) GLOW.last={data:g.data.slice(), size:g.size, marks:g.marks}; fr=GLOW.last; }
   if(!fr) return;
-  const N=fr.size, ST=2, fs=far ? R*2.2 : Math.min(H*0.62, W*1.25), x0=cx-fs/2, y0=(far? hy-fs*0.82 : cy-fs*0.5), sd=inkSeed(N*N*2+2), dd=fr.data;
+  const N=fr.size, ST=2, fs=guard!=="giant" ? R*(far?3.0:2.7) : far ? R*2.2 : Math.min(H*0.62, W*1.25), x0=cx-fs/2, y0=(far? hy-fs*0.82 : cy-fs*0.5), sd=inkSeed(N*N*2+2), dd=fr.data;
   const A=(i,j)=>(i<0||j<0||i>=N||j>=N)?0:dd[(j*N+i)*4+3], Lm=(i,j)=>(i<0||j<0||i>=N||j>=N)?0:dd[(j*N+i)*4]/255;
   const toS=(u,v)=>[x0+u/N*fs, y0+v/N*fs];
   const body=[], rim=[];
@@ -1476,19 +1485,25 @@ function glowGiant(c,W,H,t,dt,cx,cy,R,sol,far,hy){
     x=(W/2+AR.ox+(sd[k+7]-.5)*W*1.1)*(1-e)+x*e; y=(H*0.42+AR.oy+(sd[k+11]-.5)*H*0.9)*(1-e)+y*e;
     if(sol){ const ph=sd[k+3]*6.283, kk=Math.min(1,sol/0.8); x+=Math.cos(ph)*kk*R*0.5*sd[k+5]; y+=Math.sin(ph)*kk*R*0.5*sd[k+5];
       if(sol>0.8){ const m=Math.min(1,(sol-0.8)/0.9), q=m*m; x+=(W/2-x)*q; y+=(H+40-y)*q; } }
-    (edge||seam?rim:body).push(x,y,e,k);
+    (edge||seam?rim:body).push(x,y,e,k + (Math.hypot(i/N-0.5,j/N-0.5)*2)/4);   // fractional part carries the distance from centre
   }
+  // palettes: the giant is blue-white; the idol warm gold with iridescent seams; the sun red at the core, blue-white at the tips
+  const pal=(n,isRim,tw)=>{ const d=(n%1)*4;
+    if(guard==="sun") return sunCol(d*1.15+(isRim?0.12:0));
+    if(guard==="idol") return isRim ? (Math.sin(t*1.5+n)>0.3 ? [255,250,240] : iri(n*0.013+t*0.06)) : [255,214,160];
+    return isRim ? [235,242,255] : [170,205,255]; };
   const gf=Math.min(1,t/0.8)*(sol>1.5?Math.max(0,1-(sol-1.5)/0.4):1);
   // a soft blue body of light behind the points
-  c.fillStyle=`rgba(70,120,255,${0.12*gf})`;
+  c.fillStyle = guard==="sun" ? `rgba(255,90,50,${0.10*gf})` : guard==="idol" ? `rgba(255,190,110,${0.08*gf})` : `rgba(70,120,255,${0.12*gf})`;
   for(let n=0;n<body.length;n+=8) c.fillRect(body[n]-4,body[n+1]-4,8,8);
   for(let n=0;n<rim.length;n+=4) c.fillRect(rim[n]-2.5,rim[n+1]-2.5,5,5);
-  for(let n=0;n<body.length;n+=4){ const tw=0.5+0.5*Math.sin(t*3+body[n+3]); c.fillStyle=`rgba(170,205,255,${(0.45+0.5*tw)*gf*(0.3+0.7*body[n+2])})`; c.fillRect(body[n]-1.1,body[n+1]-1.1,2.2,2.2); }
-  for(let n=0;n<rim.length;n+=4){ const tw=0.6+0.4*Math.sin(t*4+rim[n+3]); c.fillStyle=`rgba(235,242,255,${tw*gf*(0.3+0.7*rim[n+2])})`; c.fillRect(rim[n]-1.3,rim[n+1]-1.3,2.6,2.6); }
+  for(let n=0;n<body.length;n+=4){ const tw=0.5+0.5*Math.sin(t*3+body[n+3]); c.fillStyle=`rgba(${pal(body[n+3],false)},${(0.45+0.5*tw)*gf*(0.3+0.7*body[n+2])})`; c.fillRect(body[n]-1.1,body[n+1]-1.1,2.2,2.2); }
+  for(let n=0;n<rim.length;n+=4){ const tw=0.6+0.4*Math.sin(t*4+rim[n+3]); c.fillStyle=`rgba(${pal(rim[n+3],true)},${tw*gf*(0.3+0.7*rim[n+2])})`; c.fillRect(rim[n]-1.3,rim[n+1]-1.3,2.6,2.6); }
   for(let n=0;n<rim.length;n+=4){ const q=rim[n+3]; if(Math.sin(t*1.7+q*0.37)>0.998) star4(c,rim[n],rim[n+1],6,gf,[180,210,255]); }
   for(let n=0;n<body.length;n+=4){ const q=body[n+3]; if(Math.sin(t*1.3+q*0.53)>0.999) star4(c,body[n],body[n+1],5,gf,[190,215,255]); }
   if(!sol && rim.length && AR.focus>0.6) for(let s=0;s<3;s++){ const n=4*Math.floor(Math.random()*rim.length/4); GLOW.shed.push({x:rim[n],y:rim[n+1],vx:(Math.random()-.5)*14,vy:-10-Math.random()*22,life:1}); }
-  const mk=fr.marks||{}, look=sm((AR.focus-0.5)/0.3)*gf;
+  const mk=Object.assign({},fr.marks||{}), look=sm((AR.focus-0.5)/0.3)*gf;
+  if(mk.head && !mk.eyeL){ const e=N*0.018; mk.eyeL=[mk.head[0]-e,mk.head[1]-e*0.4]; mk.eyeR=[mk.head[0]+e,mk.head[1]-e*0.4]; mk.third=[mk.head[0],mk.head[1]-e*2.2]; }
   // the eyes and the third eye
   if(mk.eyeL && look>0.02){
     for(const p of [mk.eyeL,mk.eyeR]){ const [x,y]=toS(...p); const g=c.createRadialGradient(x,y,0,x,y,7); g.addColorStop(0,`rgba(255,255,255,${look})`); g.addColorStop(1,"rgba(150,190,255,0)"); c.fillStyle=g; c.fillRect(x-7,y-7,14,14); }
@@ -1496,7 +1511,8 @@ function glowGiant(c,W,H,t,dt,cx,cy,R,sol,far,hy){
     star4(c,tx,ty,5+2*Math.sin(t*2),look,[220,235,255]);
   }
   // streams: from the feet, light pours over the ground towards you
-  if(mk.feet && !far){
+  if(guard==="giant" && !mk.feet) mk.feet=[N/2, N*0.97];
+  if(guard==="giant" && !far){
     const [fx,fy]=toS(...mk.feet), sa=sm(AR.focus)*gf;
     for(let s=0;s<11;s++){
       const ex=fx+(s-5)/5*W*0.8, ey=H+30, mx=fx+(s-5)*8, my=fy+(ey-fy)*0.35;
@@ -1552,7 +1568,7 @@ async function openAR(i, mode){
   AR.beastName=""; INK.trail=[]; INK.last=null; INK.lastT=0; GLOW.last=null; GLOW.lastT=0; GLOW.shed=[];
   $("ar").classList.toggle("paper", AR.paper); $("ar").classList.toggle("glow", AR.glow);
   // three guardians in the light style: the sun, the giant, the idol (only the giant needs the 3D module)
-  if(AR.glow){ const bk=beastKindFor(i); AR.guard=bk.guard; AR.beastId=bk.id; if(bk.guard==="giant") BEAST.show("giant").then(n=>{ AR.beastName=n; }); }
+  if(AR.glow){ const bk=beastKindFor(i); AR.guard=bk.guard; AR.beastId=bk.id; showGuard(bk.guard); }
   else if(AR.paper){ const bk=beastKindFor(i); AR.beastId=bk.id; BEAST.show(bk.kind).then(n=>{ AR.beastName=n; }).catch(()=>{ AR.paper=AR.glow=false; $("ar").classList.remove("paper","glow"); }); }
   $("ar").classList.toggle("far", AR.mode==="far");
   $("arFocus").textContent = AR.mode==="far" ? "" : "Смотри на портал — он проявляется от твоего внимания";
@@ -2648,7 +2664,7 @@ function sndUpdate(){
 document.addEventListener("pointerdown", sndInit, {passive:true});
 setInterval(sndUpdate, 120);
 window.__openAR=(i,m)=>openAR(i,m); window.__golds=()=>golds.map(g=>g.type);
-window.__focus=v=>{AR.focus=v;}; window.__guard=g=>{AR.guard=g; if(g==='giant') BEAST.show('giant');}; window.__ar=()=>({focus:AR.focus, ox:AR.ox, oy:AR.oy, paper:AR.paper, name:AR.beastName, W:AR.W, H:AR.H});
+window.__focus=v=>{AR.focus=v;}; window.__guard=g=>{AR.guard=g; showGuard(g);}; window.__ready=()=>AR.modelReady; window.__ar=()=>({focus:AR.focus, ox:AR.ox, oy:AR.oy, paper:AR.paper, name:AR.beastName, W:AR.W, H:AR.H});
 window.__snd=()=>({ctx:!!SND.ctx, state:SND.ctx&&SND.ctx.state, level:+SND.level.toFixed(3), f0:SND.f0, on:SND.on});
 { const lbl=()=>{ $("arStyleBtn").textContent = (store.get("iskin.arStyle")||"glow")==="paper" ? "Стиль порталов: бумага" : "Стиль порталов: свет"; }; lbl();
   $("arStyleBtn").onclick=()=>{ store.set("iskin.arStyle", (store.get("iskin.arStyle")||"glow")==="paper" ? "glow" : "paper"); lbl(); }; }
