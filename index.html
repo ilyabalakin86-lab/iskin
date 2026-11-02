@@ -1476,9 +1476,10 @@ function glowModel(c,W,H,t,dt,cx,cy,R,sol,far,hy,guard){
     if(Math.max(A(i,j),A(i+1,j),A(i,j+1),A(i+1,j+1))<50) continue;
     const k=j*N+i, l=Lm(i,j);
     const edge = A(i-ST,j)<50||A(i+ST,j)<50||A(i,j-ST)<50||A(i,j+ST)<50;
-    const seam = !edge && (Math.abs(l-Lm(i+ST,j))>0.055 || Math.abs(l-Lm(i,j+ST))>0.055 || l<0.18);   // grooves, overlaps and deep shadow   // where parts overlap: the dotted "muscle" lines
+    const lap = l-(Lm(i+ST,j)+Lm(i-ST,j)+Lm(i,j+ST)+Lm(i,j-ST))/4;
+    const seam = !edge && (Math.abs(lap)>0.035 || l<0.15);   // carved grooves, muscle lines, overlaps, deep shadow   // where parts overlap: the dotted "muscle" lines
     const fadeLeg = Math.max(0,(j/N-0.72)/0.2);                                            // legs dissolve downward
-    if(!edge && !seam && sd[k*2]>0.42+0.5*l) continue;
+    if(!edge && !seam && sd[k*2]>0.1+0.3*l) continue;          // the body itself stays sparse and glassy so the lines lead
     if(sd[k*2+1]<fadeLeg) continue;
     const del=sd[k]*0.5, e=sm((AR.focus-del)/(1-del));
     let [x,y]=toS(i+1.6*sd[k*2+1]-0.3, j+1.6*sd[k+1]-0.3);   // jitter over the whole cell so the grid disappears
