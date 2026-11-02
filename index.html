@@ -1468,7 +1468,7 @@ function glowModel(c,W,H,t,dt,cx,cy,R,sol,far,hy,guard){
   let fr=GLOW.last;
   if(window.BEAST && (!fr || t-GLOW.lastT>0.033)){ const g=BEAST.frame(t,t-(GLOW.lastT||t),0); GLOW.lastT=t; if(g) GLOW.last={data:g.data.slice(), size:g.size, marks:g.marks}; fr=GLOW.last; }
   if(!fr) return;
-  const N=fr.size, ST=guard==='giant'?2:1, SP=guard==='giant'?1:0.25, fs=guard!=="giant" ? R*(far?3.0:2.7) : far ? R*2.2 : Math.min(H*0.62, W*1.25), x0=cx-fs/2, y0=(far? hy-fs*0.82 : cy-fs*0.5), sd=inkSeed(N*N*2+2), dd=fr.data;
+  const N=fr.size, procedural=!AR.modelReady, ST=procedural?2:1, SP=procedural?1:guard==='sun'?0.15:0.25, fs=guard!=="giant" ? R*(far?3.0:2.7) : far ? R*2.2 : Math.min(H*0.62, W*1.25), x0=cx-fs/2, y0=(far? hy-fs*0.82 : cy-fs*0.5), sd=inkSeed(N*N*2+2), dd=fr.data;
   const A=(i,j)=>(i<0||j<0||i>=N||j>=N)?0:dd[(j*N+i)*4+3], Lm=(i,j)=>(i<0||j<0||i>=N||j>=N)?0:dd[(j*N+i)*4]/255;
   const toS=(u,v)=>[x0+u/N*fs, y0+v/N*fs];
   const body=[], rim=[];

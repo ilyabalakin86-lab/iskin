@@ -121,7 +121,7 @@ function frame(t, dt, yaw) {
     camera.position.set(0, 0, K.cam); camera.lookAt(0, 0, 0);
     hemi.intensity = 0.7; sun.intensity = 4.2; sun.position.set(-2.5, 2.2, 1.6);   // raking light: grooves and muscles read as lines
     cur.mixer.update(dt);
-    if (K.guard === "sun") cur.pivot.rotation.set(Math.sin(t * 0.21) * 0.12, Math.sin(t * 0.27) * 0.28 + yaw, t * 0.06);
+    if (K.guard === "sun") cur.pivot.rotation.set(Math.sin(t * 0.21) * 0.12, Math.sin(t * 0.27) * 0.28 + yaw, Math.sin(t * 0.15) * 0.05);
     else if (K.guard === "idol") cur.pivot.rotation.set(Math.sin(t * 0.19) * 0.06, Math.sin(t * 0.4) * 0.35 + yaw, 0);
     else cur.pivot.rotation.set(0, Math.sin(t * 0.17) * 0.3 + yaw, 0);
     cur.pivot.position.y = K.guard === "giant" ? Math.sin(t * 1.1) * 0.01 : Math.sin(t * 0.8) * 0.02;
