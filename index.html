@@ -1263,7 +1263,7 @@ function beastKindFor(i){
   const g=golds[i], key=String(g&&(g.wid||g.place)||i); let h=7;
   for(const ch of key) h=(h*31+ch.charCodeAt(0))|0;
   h=Math.abs(h); const ks=window.BEAST?BEAST.kinds:["flamingo"];
-  return {kind:ks[h%ks.length], id:1000+h%9000};
+  return {kind:ks[h%ks.length], guard:["sun","giant","idol"][h%3], id:1000+h%9000};
 }
 // the camera feed, re-printed as grey stipple on paper
 function paperCamera(c0,W,H,t){
@@ -1386,10 +1386,27 @@ const SUNC=[[255,40,40],[255,110,40],[255,190,90],[90,130,255],[220,232,255]];
 function sunCol(k){ k=Math.max(0,Math.min(0.999,k))*(SUNC.length-1); const i=Math.floor(k); return lerp3(SUNC[i],SUNC[i+1],k-i); }
 function drawGlowPortal(c,W,H,t,dt,cx,cy,R,sol,far,appear,breathe){
   if(!GLOW.rays) glowBuild();
-  const sm=x=>x<=0?0:x>=1?1:x*x*(3-2*x), hd=heading??0, pt=pitch??80, fade=sol?Math.max(0,1-sol/1.6):1;
+  const guard=AR.guard||"sun", hd=heading??0, pt=pitch??80, fade=sol?Math.max(0,1-sol/1.6):1;
+  const hy=H*0.42+(pt-80)/50*H;
   c.globalCompositeOperation="lighter";
-  // 1) ground contours: rows of light receding to the horizon, rippling like terrain
-  const hy=H*0.42+(pt-80)/50*H, f=W*0.9, camH=1.6, yawX=hd/360*120;
+  glowGround(c,W,H,t,hy,hd,appear,fade, guard==="idol" ? [255,200,120] : [190,214,255], guard==="idol" ? [255,240,190] : [255,214,140]);
+  if(guard==="sun") glowSun(c,W,H,t,cx,cy,R,sol,far,appear,breathe,fade);
+  else if(guard==="giant") glowGiant(c,W,H,t,dt,cx,cy,R,sol,far,hy);
+  else glowIdol(c,W,H,t,cx,cy,R,sol,far);
+  // sparks shed by the guardian drift up and fade
+  for(const p of GLOW.shed){ p.x+=p.vx*dt; p.y+=p.vy*dt; p.life-=dt*0.7; c.fillStyle=`rgba(${p.col||"200,220,255"},${Math.max(0,p.life)*0.8})`; c.fillRect(p.x-1,p.y-1,2,2); }
+  GLOW.shed=GLOW.shed.filter(p=>p.life>0).slice(-400);
+  // four-point stars in the sky
+  for(const g of AR.glints){
+    const on=Math.sin(t*0.9+g.ph); if(on<0.2) continue;
+    const x=((g.a/6.283*W*1.6 - hd/60*W)%(W*1.6)+W*1.6)%(W*1.6)-W*0.3, y=hy-(0.1+g.r*0.5)*H*0.5;
+    star4(c,x,y,g.sz*0.8*on,on*appear,[200,220,255]);
+  }
+  c.globalCompositeOperation="source-over";
+}
+// rows of light combing the ground, rippling like terrain contours
+function glowGround(c,W,H,t,hy,hd,appear,fade,col,col2){
+  const f=W*0.9, camH=1.6, yawX=hd/360*120;
   for(let k=0;k<26;k++){
     const z=2.2*Math.pow(1.16,k), yb=hy+f*camH/z; if(yb>H+10) continue; if(yb<hy+2) break;
     const step=0.55, n=Math.ceil((W*0.6*z/f)/step)+2, near=Math.min(1,3/z);
@@ -1399,72 +1416,117 @@ function drawGlowPortal(c,W,H,t,dt,cx,cy,R,sol,far,appear,breathe){
       if(x<-4||x>W+4) continue;
       const h=Math.sin(wx*12.9898+k*78.233)*43758.5453, r=h-Math.floor(h);
       const tw=0.55+0.45*Math.sin(t*2+r*40), a=(0.25+0.6*near)*tw*appear*(0.6+0.4*fade);
-      const col = r>0.93 ? [255,214,140] : [190,214,255], s=0.8+near*2.2;
-      c.fillStyle=`rgba(${col},${a})`; c.fillRect(x-s/2,y-s/2,s,s);
-      if(r>0.985 && near>0.25) star4(c,x,y,4+near*7,a,[200,220,255]);
+      const s=0.8+near*2.2;
+      c.fillStyle=`rgba(${r>0.93?col2:col},${a})`; c.fillRect(x-s/2,y-s/2,s,s);
+      if(r>0.985 && near>0.25) star4(c,x,y,4+near*7,a,col);
     }
   }
-  // 2) the sun: fibrous wavy rays around the ring (painted, not added: additive light washes out on a daytime sky)
+}
+// guardian 1 — the sun: a ring of fibrous wavy rays, red at the root, blue-white at the tips, two white eyes;
+// the lower rays pour down along the ground towards you
+function glowSun(c,W,H,t,cx,cy,R,sol,far,appear,breathe,fade){
+  const ringR=R*0.62*breathe*(1+sol*1.2)*(0.7+0.3*appear), ra=appear*fade;
   c.globalCompositeOperation="source-over";
-  const ringR=R*0.62*breathe*(1+sol*1.2)*(0.7+0.3*appear), ra=appear*fade*(far?0.45:1);
   for(const ry of GLOW.rays){
-    const L=Math.floor(60*ry.len);
+    const down=Math.max(0,Math.sin(ry.a)), L=Math.floor(60*ry.len*(1+down*1.2));
     for(let fi=0;fi<ry.fib;fi++){
       const off=(fi-(ry.fib-1)/2)*2.4;
       for(let j=0;j<L;j++){
-        const u=j/L, r0=ringR+j*R*0.024*(far?1.3:1);
-        const wob=Math.sin(j*ry.fr+t*1.4+ry.ph)*ry.w*Math.sqrt(u)+Math.sin(j*0.07-t*0.6+ry.ph*2)*0.08*u;
-        const a=ry.a+wob+t*0.03, ca=Math.cos(a), sa=Math.sin(a);
-        const x=cx+ca*r0-sa*off, y=cy+sa*r0+ca*off;
+        const u=j/L, r0=ringR+j*R*0.024*(far?1.3:1)*(1+down*u*1.5);
+        let a=ry.a+Math.sin(j*ry.fr+t*1.4+ry.ph)*ry.w*Math.sqrt(u)+Math.sin(j*0.07-t*0.6+ry.ph*2)*0.08*u+t*0.03;
+        if(down>0.2) a+= (Math.PI/2-a)*u*0.5*down;          // lower rays bend down toward the viewer
+        const ca=Math.cos(a), sa=Math.sin(a), x=cx+ca*r0-sa*off, y=cy+sa*r0+ca*off;
         const col=sunCol(u*1.05+(fi%2)*0.08+(fi===0||fi===ry.fib-1?0.25:0)), al=ra*(1-u*u*0.85)*(0.45+0.55*Math.sin(t*3+j*0.7+ry.ph+fi)**2);
         c.fillStyle=`rgba(${col},${al})`; c.fillRect(x-0.8,y-0.8,1.6,1.6);
-        if(j%17===5 && Math.sin(t*2.3+ry.ph+fi+j)>0.93) { c.fillStyle=`rgba(255,240,220,${ra})`; c.fillRect(x-1.6,y-1.6,3.2,3.2); }
+        if(j%17===5 && Math.sin(t*2.3+ry.ph+fi+j)>0.93){ c.fillStyle=`rgba(255,240,220,${ra})`; c.fillRect(x-1.6,y-1.6,3.2,3.2); }
       }
     }
   }
   c.globalCompositeOperation="lighter";
-  // the hot rim
   for(let i=0;i<260;i++){ const a=i/260*6.283+t*0.05, r=ringR*(0.97+0.05*Math.sin(i*1.7+t*2)); c.fillStyle=`rgba(255,90,70,${0.5*ra})`; c.fillRect(cx+Math.cos(a)*r-1,cy+Math.sin(a)*r-1,2,2); }
-  // 3) the guardian of glowing points
+  // the eyes: two white orbs in the hollow, blinking now and then; they open with your attention
+  const open=Math.min(1,Math.max(0,(AR.focus-0.4)/0.4))*(Math.sin(t*0.7)>0.97?0.1:1)*ra;
+  if(open>0.02) for(const sx of [-1,1]){
+    const ex=cx+sx*ringR*0.27, ey=cy+ringR*0.18, er=ringR*0.07;
+    const g=c.createRadialGradient(ex,ey,0,ex,ey,er*3); g.addColorStop(0,`rgba(255,250,240,${open})`); g.addColorStop(0.3,`rgba(255,240,220,${open*0.8})`); g.addColorStop(1,"rgba(255,200,150,0)");
+    c.fillStyle=g; c.beginPath(); c.arc(ex,ey,er*3,0,6.283); c.fill();
+  }
+}
+// guardian 2 — the giant: a 3D figure (beast.js) redrawn as glowing points, glassy inside, bright on its
+// silhouette and seams; eyes and a third eye burn; its legs pour out into streams of light over the ground
+function glowGiant(c,W,H,t,dt,cx,cy,R,sol,far,hy){
+  const sm=x=>x<=0?0:x>=1?1:x*x*(3-2*x);
   let fr=GLOW.last;
-  if(window.BEAST && (!fr || t-GLOW.lastT>0.033)){ const g=BEAST.frame(t,t-(GLOW.lastT||t),0); GLOW.lastT=t; if(g) GLOW.last={data:g.data.slice(), size:g.size}; fr=GLOW.last; }
-  if(fr){
-    const N=fr.size, ST=2, fs=Math.min(W*1.05, R*(far?3.2:2.6)), x0=cx-fs/2, y0=cy-fs/2, sd=inkSeed(N*N*2+2), dd=fr.data;
-    const A=(i,j)=> (i<0||j<0||i>=N||j>=N) ? 0 : dd[(j*N+i)*4+3];
-    const body=[], rim=[];
-    for(let j=0;j<N;j+=ST) for(let i=0;i<N;i+=ST){
-      if(Math.max(A(i,j),A(i+1,j),A(i,j+1),A(i+1,j+1))<50) continue;
-      const k=j*N+i, edge = A(i-ST,j)<50||A(i+ST,j)<50||A(i,j-ST)<50||A(i,j+ST)<50;
-      const l=dd[(j*N+i)*4]/255;
-      if(!edge && sd[k*2]>0.25+0.55*l) continue;          // glassy inside: sparse, denser where lit
-      const del=sd[k]*0.5, e=sm((AR.focus-del)/(1-del));
-      let x=x0+(i+0.5*sd[k*2+1])*fs/N, y=y0+(j+0.5*sd[k+1])*fs/N;
-      x=(W/2+AR.ox+(sd[k+7]-.5)*W*1.1)*(1-e)+x*e; y=(H*0.42+AR.oy+(sd[k+11]-.5)*H*0.9)*(1-e)+y*e;
-      if(sol){ const ph=sd[k+3]*6.283, kk=Math.min(1,sol/0.8); x+=Math.cos(ph)*kk*R*0.45*sd[k+5]; y+=Math.sin(ph)*kk*R*0.45*sd[k+5];
-        if(sol>0.8){ const m=Math.min(1,(sol-0.8)/0.9), q=m*m; x+=(W/2-x)*q; y+=(H+40-y)*q; } }
-      (edge?rim:body).push(x,y,e,k);
+  if(window.BEAST && (!fr || t-GLOW.lastT>0.033)){ const g=BEAST.frame(t,t-(GLOW.lastT||t),0); GLOW.lastT=t; if(g) GLOW.last={data:g.data.slice(), size:g.size, marks:g.marks}; fr=GLOW.last; }
+  if(!fr) return;
+  const N=fr.size, ST=2, fs=far ? R*2.2 : Math.min(H*0.62, W*1.25), x0=cx-fs/2, y0=(far? hy-fs*0.82 : cy-fs*0.5), sd=inkSeed(N*N*2+2), dd=fr.data;
+  const A=(i,j)=>(i<0||j<0||i>=N||j>=N)?0:dd[(j*N+i)*4+3], Lm=(i,j)=>(i<0||j<0||i>=N||j>=N)?0:dd[(j*N+i)*4]/255;
+  const toS=(u,v)=>[x0+u/N*fs, y0+v/N*fs];
+  const body=[], rim=[];
+  for(let j=0;j<N;j+=ST) for(let i=0;i<N;i+=ST){
+    if(Math.max(A(i,j),A(i+1,j),A(i,j+1),A(i+1,j+1))<50) continue;
+    const k=j*N+i, l=Lm(i,j);
+    const edge = A(i-ST,j)<50||A(i+ST,j)<50||A(i,j-ST)<50||A(i,j+ST)<50;
+    const seam = !edge && (Math.abs(l-Lm(i+ST,j))>0.09 || Math.abs(l-Lm(i,j+ST))>0.09);   // where parts overlap: the dotted "muscle" lines
+    const fadeLeg = Math.max(0,(j/N-0.72)/0.2);                                            // legs dissolve downward
+    if(!edge && !seam && sd[k*2]>0.42+0.5*l) continue;
+    if(sd[k*2+1]<fadeLeg) continue;
+    const del=sd[k]*0.5, e=sm((AR.focus-del)/(1-del));
+    let [x,y]=toS(i+1.6*sd[k*2+1]-0.3, j+1.6*sd[k+1]-0.3);   // jitter over the whole cell so the grid disappears
+    x=(W/2+AR.ox+(sd[k+7]-.5)*W*1.1)*(1-e)+x*e; y=(H*0.42+AR.oy+(sd[k+11]-.5)*H*0.9)*(1-e)+y*e;
+    if(sol){ const ph=sd[k+3]*6.283, kk=Math.min(1,sol/0.8); x+=Math.cos(ph)*kk*R*0.5*sd[k+5]; y+=Math.sin(ph)*kk*R*0.5*sd[k+5];
+      if(sol>0.8){ const m=Math.min(1,(sol-0.8)/0.9), q=m*m; x+=(W/2-x)*q; y+=(H+40-y)*q; } }
+    (edge||seam?rim:body).push(x,y,e,k);
+  }
+  const gf=Math.min(1,t/0.8)*(sol>1.5?Math.max(0,1-(sol-1.5)/0.4):1);
+  // a soft blue body of light behind the points
+  c.fillStyle=`rgba(70,120,255,${0.12*gf})`;
+  for(let n=0;n<body.length;n+=8) c.fillRect(body[n]-4,body[n+1]-4,8,8);
+  for(let n=0;n<rim.length;n+=4) c.fillRect(rim[n]-2.5,rim[n+1]-2.5,5,5);
+  for(let n=0;n<body.length;n+=4){ const tw=0.5+0.5*Math.sin(t*3+body[n+3]); c.fillStyle=`rgba(170,205,255,${(0.45+0.5*tw)*gf*(0.3+0.7*body[n+2])})`; c.fillRect(body[n]-1.1,body[n+1]-1.1,2.2,2.2); }
+  for(let n=0;n<rim.length;n+=4){ const tw=0.6+0.4*Math.sin(t*4+rim[n+3]); c.fillStyle=`rgba(235,242,255,${tw*gf*(0.3+0.7*rim[n+2])})`; c.fillRect(rim[n]-1.3,rim[n+1]-1.3,2.6,2.6); }
+  for(let n=0;n<rim.length;n+=4){ const q=rim[n+3]; if(Math.sin(t*1.7+q*0.37)>0.998) star4(c,rim[n],rim[n+1],6,gf,[180,210,255]); }
+  for(let n=0;n<body.length;n+=4){ const q=body[n+3]; if(Math.sin(t*1.3+q*0.53)>0.999) star4(c,body[n],body[n+1],5,gf,[190,215,255]); }
+  if(!sol && rim.length && AR.focus>0.6) for(let s=0;s<3;s++){ const n=4*Math.floor(Math.random()*rim.length/4); GLOW.shed.push({x:rim[n],y:rim[n+1],vx:(Math.random()-.5)*14,vy:-10-Math.random()*22,life:1}); }
+  const mk=fr.marks||{}, look=sm((AR.focus-0.5)/0.3)*gf;
+  // the eyes and the third eye
+  if(mk.eyeL && look>0.02){
+    for(const p of [mk.eyeL,mk.eyeR]){ const [x,y]=toS(...p); const g=c.createRadialGradient(x,y,0,x,y,7); g.addColorStop(0,`rgba(255,255,255,${look})`); g.addColorStop(1,"rgba(150,190,255,0)"); c.fillStyle=g; c.fillRect(x-7,y-7,14,14); }
+    const [tx,ty]=toS(...mk.third); c.strokeStyle=`rgba(230,240,255,${look})`; c.lineWidth=1; c.beginPath(); c.arc(tx,ty,3.5,0,6.283); c.stroke();
+    star4(c,tx,ty,5+2*Math.sin(t*2),look,[220,235,255]);
+  }
+  // streams: from the feet, light pours over the ground towards you
+  if(mk.feet && !far){
+    const [fx,fy]=toS(...mk.feet), sa=sm(AR.focus)*gf;
+    for(let s=0;s<11;s++){
+      const ex=fx+(s-5)/5*W*0.8, ey=H+30, mx=fx+(s-5)*8, my=fy+(ey-fy)*0.35;
+      for(let q=0;q<46;q++){
+        const u=((q/46)+t*0.06+s*0.37)%1, iu=1-u;
+        let x=iu*iu*fx+2*iu*u*mx+u*u*ex, y=iu*iu*fy+2*iu*u*my+u*u*ey;
+        x+=Math.sin(u*9+t*1.2+s)*6*u;
+        const sz=0.8+u*2.4; c.fillStyle=`rgba(${q%9===0?"255,225,170":"200,222,255"},${sa*(0.25+0.6*(1-Math.abs(u-0.5)*1.4))})`; c.fillRect(x-sz/2,y-sz/2,sz,sz);
+      }
     }
-    const gf=Math.min(1,t/0.8)*(sol>1.5?Math.max(0,1-(sol-1.5)/0.4):1);
-    // halo, then cores
-    c.fillStyle=`rgba(90,140,255,${0.18*gf})`;
-    for(let n=0;n<rim.length;n+=4) c.fillRect(rim[n]-3.5,rim[n+1]-3.5,7,7);
-    c.fillStyle=`rgba(60,110,255,${0.10*gf})`;
-    for(let n=0;n<body.length;n+=4) c.fillRect(body[n]-2.5,body[n+1]-2.5,5,5);
-    for(let n=0;n<body.length;n+=4){ const tw=0.5+0.5*Math.sin(t*3+body[n+3]); c.fillStyle=`rgba(170,205,255,${(0.45+0.55*tw)*gf*(0.3+0.7*body[n+2])})`; c.fillRect(body[n]-1,body[n+1]-1,2,2); }
-    for(let n=0;n<rim.length;n+=4){ const tw=0.6+0.4*Math.sin(t*4+rim[n+3]); c.fillStyle=`rgba(240,246,255,${tw*gf*(0.3+0.7*rim[n+2])})`; c.fillRect(rim[n]-1.4,rim[n+1]-1.4,2.8,2.8); }
-    // a few points flare into stars; the silhouette sheds sparks that drift up and fade
-    for(let n=0;n<rim.length;n+=4){ const q=rim[n+3]; if(Math.sin(t*1.7+q*0.37)>0.985) star4(c,rim[n],rim[n+1],7,gf,[180,210,255]); }
-    if(!sol && rim.length && AR.focus>0.6) for(let s=0;s<3;s++){ const n=4*Math.floor(Math.random()*rim.length/4); GLOW.shed.push({x:rim[n],y:rim[n+1],vx:(Math.random()-.5)*14,vy:-10-Math.random()*22,life:1}); }
   }
-  for(const p of GLOW.shed){ p.x+=p.vx*dt; p.y+=p.vy*dt; p.life-=dt*0.7; c.fillStyle=`rgba(200,220,255,${Math.max(0,p.life)*0.8})`; c.fillRect(p.x-1,p.y-1,2,2); }
-  GLOW.shed=GLOW.shed.filter(p=>p.life>0).slice(-400);
-  // 4) star glints in the sky
-  for(const g of AR.glints){
-    const on=Math.sin(t*0.9+g.ph); if(on<0.2) continue;
-    const x=((g.a/6.283*W*1.6 - hd/60*W)%(W*1.6)+W*1.6)%(W*1.6)-W*0.3, y=hy - (0.1+g.r*0.5)*H*0.5;
-    star4(c,x,y,g.sz*0.8*on,on*appear,[200,220,255]);
+}
+// guardian 3 — the idol: the domed head of glass and light (same figure the battle idol uses),
+// over golden contour hills
+function glowIdol(c,W,H,t,cx,cy,R,sol,far){
+  const sm=x=>x<=0?0:x>=1?1:x*x*(3-2*x), fs=R*(far?3.4:2.9), yaw=reduced?0:Math.sin(t*0.4)*0.22, ca=Math.cos(yaw), sa=Math.sin(yaw);
+  for(const p of AR.face){
+    const e=sm((AR.focus-p.del)/(1-p.del));
+    let px=cx+(p.x*ca+p.z*sa)*fs, py=cy+p.y*fs;
+    px=(W/2+AR.ox+p.sx*W*0.55)*(1-e)+px*e; py=(H*0.42+AR.oy+p.sy*H*0.45)*(1-e)+py*e;
+    let alpha=(0.18+0.82*e)*(0.35+0.65*p.l)*Math.min(1,t/0.8);
+    if(sol){ const k=Math.min(1,sol/0.8); px+=Math.cos(p.ph)*k*R*0.35*p.s; py+=Math.sin(p.ph)*k*R*0.35*p.s;
+      if(sol>0.8){ const m=Math.min(1,(sol-0.8)/0.9), q=m*m; px+=(W/2-px)*q; py+=(H+40-py)*q; } alpha*=sol>1.5?Math.max(0,1-(sol-1.5)/0.4):1; }
+    const col = p.kind===2 ? (Math.sin(t*1.5+p.ph)>0.3 ? [255,250,240] : iri(p.ph/6.283+t*0.06)) : p.kind===1 ? iri(p.ph/6.283+p.y*0.8+t*0.05) : [255,214,160];
+    const tw=0.55+0.45*Math.sin(t*2.5+p.ph);
+    c.fillStyle=`rgba(${col},${alpha*tw*(p.kind===0?0.8:1)})`;
+    const s=p.s*1.5; c.fillRect(px-s/2,py-s/2,s,s);
+    if(p.kind===2 && Math.sin(t*1.1+p.ph*7)>0.999) star4(c,px,py,6,alpha,[255,240,220]);
   }
-  c.globalCompositeOperation="source-over";
+  if(!sol && AR.focus>0.6 && Math.random()<0.6){ const p=AR.face[Math.floor(Math.random()*AR.face.length)]; GLOW.shed.push({x:cx+p.x*fs,y:cy+p.y*fs,vx:20+Math.random()*30,vy:(Math.random()-.6)*12,life:1,col:"230,200,255"}); }
 }
 
 function buildPortal(){
@@ -1489,7 +1551,9 @@ async function openAR(i, mode){
   AR.paper = !!window.BEAST && arStyle==="paper"; AR.glow = !!window.BEAST && arStyle==="glow";
   AR.beastName=""; INK.trail=[]; INK.last=null; INK.lastT=0; GLOW.last=null; GLOW.lastT=0; GLOW.shed=[];
   $("ar").classList.toggle("paper", AR.paper); $("ar").classList.toggle("glow", AR.glow);
-  if(AR.paper||AR.glow){ const bk=beastKindFor(i); AR.beastId=bk.id; BEAST.show(bk.kind).then(n=>{ AR.beastName=n; }).catch(()=>{ AR.paper=AR.glow=false; $("ar").classList.remove("paper","glow"); }); }
+  // three guardians in the light style: the sun, the giant, the idol (only the giant needs the 3D module)
+  if(AR.glow){ const bk=beastKindFor(i); AR.guard=bk.guard; AR.beastId=bk.id; if(bk.guard==="giant") BEAST.show("giant").then(n=>{ AR.beastName=n; }); }
+  else if(AR.paper){ const bk=beastKindFor(i); AR.beastId=bk.id; BEAST.show(bk.kind).then(n=>{ AR.beastName=n; }).catch(()=>{ AR.paper=AR.glow=false; $("ar").classList.remove("paper","glow"); }); }
   $("ar").classList.toggle("far", AR.mode==="far");
   $("arFocus").textContent = AR.mode==="far" ? "" : "Смотри на портал — он проявляется от твоего внимания";
   AR.gi=i; AR.open=true; AR.solvedAt=0; AR.t0=performance.now(); AR.anchor=null;
@@ -2584,7 +2648,7 @@ function sndUpdate(){
 document.addEventListener("pointerdown", sndInit, {passive:true});
 setInterval(sndUpdate, 120);
 window.__openAR=(i,m)=>openAR(i,m); window.__golds=()=>golds.map(g=>g.type);
-window.__focus=v=>{AR.focus=v;}; window.__ar=()=>({focus:AR.focus, ox:AR.ox, oy:AR.oy, paper:AR.paper, name:AR.beastName, W:AR.W, H:AR.H});
+window.__focus=v=>{AR.focus=v;}; window.__guard=g=>{AR.guard=g; if(g==='giant') BEAST.show('giant');}; window.__ar=()=>({focus:AR.focus, ox:AR.ox, oy:AR.oy, paper:AR.paper, name:AR.beastName, W:AR.W, H:AR.H});
 window.__snd=()=>({ctx:!!SND.ctx, state:SND.ctx&&SND.ctx.state, level:+SND.level.toFixed(3), f0:SND.f0, on:SND.on});
 { const lbl=()=>{ $("arStyleBtn").textContent = (store.get("iskin.arStyle")||"glow")==="paper" ? "Стиль порталов: бумага" : "Стиль порталов: свет"; }; lbl();
   $("arStyleBtn").onclick=()=>{ store.set("iskin.arStyle", (store.get("iskin.arStyle")||"glow")==="paper" ? "glow" : "paper"); lbl(); }; }
