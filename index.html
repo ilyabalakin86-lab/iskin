@@ -1476,7 +1476,7 @@ function glowModel(c,W,H,t,dt,cx,cy,R,sol,far,hy,guard){
     if(Math.max(A(i,j),A(i+1,j),A(i,j+1),A(i+1,j+1))<50) continue;
     const k=j*N+i, l=Lm(i,j);
     const edge = A(i-ST,j)<50||A(i+ST,j)<50||A(i,j-ST)<50||A(i,j+ST)<50;
-    const seam = !edge && (Math.abs(l-Lm(i+ST,j))>0.09 || Math.abs(l-Lm(i,j+ST))>0.09);   // where parts overlap: the dotted "muscle" lines
+    const seam = !edge && (Math.abs(l-Lm(i+ST,j))>0.055 || Math.abs(l-Lm(i,j+ST))>0.055 || l<0.18);   // grooves, overlaps and deep shadow   // where parts overlap: the dotted "muscle" lines
     const fadeLeg = Math.max(0,(j/N-0.72)/0.2);                                            // legs dissolve downward
     if(!edge && !seam && sd[k*2]>0.42+0.5*l) continue;
     if(sd[k*2+1]<fadeLeg) continue;
@@ -1490,15 +1490,15 @@ function glowModel(c,W,H,t,dt,cx,cy,R,sol,far,hy,guard){
   // palettes: the giant is blue-white; the idol warm gold with iridescent seams; the sun red at the core, blue-white at the tips
   const pal=(n,isRim,tw)=>{ const d=(n%1)*4;
     if(guard==="sun") return sunCol(d*1.15+(isRim?0.12:0));
-    if(guard==="idol") return isRim ? (Math.sin(t*1.5+n)>0.3 ? [255,250,240] : iri(n*0.013+t*0.06)) : [255,214,160];
+    if(guard==="idol") return isRim ? (Math.sin(t*0.9+n*0.02)>-0.2 ? [255,236,200] : iri(n*0.0007+t*0.06)) : [230,190,140];
     return isRim ? [235,242,255] : [170,205,255]; };
   const gf=Math.min(1,t/0.8)*(sol>1.5?Math.max(0,1-(sol-1.5)/0.4):1);
   // a soft blue body of light behind the points
   c.fillStyle = guard==="sun" ? `rgba(255,90,50,${0.10*gf})` : guard==="idol" ? `rgba(255,190,110,${0.08*gf})` : `rgba(70,120,255,${0.12*gf})`;
   for(let n=0;n<body.length;n+=8) c.fillRect(body[n]-4,body[n+1]-4,8,8);
   for(let n=0;n<rim.length;n+=4) c.fillRect(rim[n]-2.5,rim[n+1]-2.5,5,5);
-  for(let n=0;n<body.length;n+=4){ const tw=0.5+0.5*Math.sin(t*3+body[n+3]); c.fillStyle=`rgba(${pal(body[n+3],false)},${(0.45+0.5*tw)*gf*(0.3+0.7*body[n+2])})`; c.fillRect(body[n]-1.1,body[n+1]-1.1,2.2,2.2); }
-  for(let n=0;n<rim.length;n+=4){ const tw=0.6+0.4*Math.sin(t*4+rim[n+3]); c.fillStyle=`rgba(${pal(rim[n+3],true)},${tw*gf*(0.3+0.7*rim[n+2])})`; c.fillRect(rim[n]-1.3,rim[n+1]-1.3,2.6,2.6); }
+  for(let n=0;n<body.length;n+=4){ const tw=0.5+0.5*Math.sin(t*3+body[n+3]); c.fillStyle=`rgba(${pal(body[n+3],false)},${(0.45+0.5*tw)*gf*(0.3+0.7*body[n+2])})`; c.fillRect(body[n]-0.8,body[n+1]-0.8,1.6,1.6); }
+  for(let n=0;n<rim.length;n+=4){ const tw=0.6+0.4*Math.sin(t*4+rim[n+3]); c.fillStyle=`rgba(${pal(rim[n+3],true)},${tw*gf*(0.3+0.7*rim[n+2])})`; c.fillRect(rim[n]-1,rim[n+1]-1,2,2); }
   for(let n=0;n<rim.length;n+=4){ const q=rim[n+3]; if(Math.sin(t*1.7+q*0.37)>0.998) star4(c,rim[n],rim[n+1],6,gf,[180,210,255]); }
   for(let n=0;n<body.length;n+=4){ const q=body[n+3]; if(Math.sin(t*1.3+q*0.53)>0.999) star4(c,body[n],body[n+1],5,gf,[190,215,255]); }
   if(!sol && rim.length && AR.focus>0.6) for(let s=0;s<3;s++){ const n=4*Math.floor(Math.random()*rim.length/4); GLOW.shed.push({x:rim[n],y:rim[n+1],vx:(Math.random()-.5)*14,vy:-10-Math.random()*22,life:1}); }

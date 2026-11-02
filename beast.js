@@ -74,13 +74,13 @@ function buildGiant() {
   const marks = { eyeL: [-0.05, 0.0, 0.125, head], eyeR: [0.05, 0.0, 0.125, head], third: [0, 0.09, 0.12, head], feet: [0, -1.0, 0.02, root] };
   return { pivot, anim, marks };
 }
-const SIZE = 160;                       // off-screen render size (pixels); the halftone grid samples it
+const SIZE = 224;                       // off-screen render size (pixels); the halftone grid samples it
 const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: false, preserveDrawingBuffer: true });
 renderer.setPixelRatio(1); renderer.setSize(SIZE, SIZE, false); renderer.setClearColor(0x000000, 0);
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(32, 1, 0.1, 50);
 camera.position.set(0, 0.1, 2.5); camera.lookAt(0, 0.12, 0);
-scene.add(new THREE.HemisphereLight(0xffffff, 0x333333, 1.7));
+const hemi = new THREE.HemisphereLight(0xffffff, 0x333333, 1.7); scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xffffff, 3.2); sun.position.set(-2, 3, 2.5); scene.add(sun);
 const loader = new GLTFLoader();
 const cache = {};
@@ -119,6 +119,7 @@ function frame(t, dt, yaw) {
   if (K.guard) {
     // sculpted guardians: they stay in place, breathe and turn slowly
     camera.position.set(0, 0, K.cam); camera.lookAt(0, 0, 0);
+    hemi.intensity = 0.7; sun.intensity = 4.2; sun.position.set(-2.5, 2.2, 1.6);   // raking light: grooves and muscles read as lines
     cur.mixer.update(dt);
     if (K.guard === "sun") cur.pivot.rotation.set(Math.sin(t * 0.21) * 0.12, Math.sin(t * 0.27) * 0.28 + yaw, t * 0.06);
     else if (K.guard === "idol") cur.pivot.rotation.set(Math.sin(t * 0.19) * 0.06, Math.sin(t * 0.4) * 0.35 + yaw, 0);
@@ -134,6 +135,7 @@ function frame(t, dt, yaw) {
     return out;
   }
   if (K.giant) {
+    hemi.intensity = 1.7; sun.intensity = 3.2; sun.position.set(-2, 3, 2.5);
     // the giant stands still, breathes and looks around, turning slightly towards you
     camera.position.set(0, 0.05, K.cam); camera.lookAt(0, 0.0, 0);
     cur.anim(t);
@@ -148,6 +150,7 @@ function frame(t, dt, yaw) {
     out.marks = m; return out;
   }
   camera.position.set(0, 0.1, 2.5); camera.lookAt(0, 0.12, 0);
+  hemi.intensity = 1.7; sun.intensity = 3.2; sun.position.set(-2, 3, 2.5);
   cur.mixer.update(dt * K.speed);
   // it wanders: drifts left and right across the portal, turning to face where it goes
   const x = Math.sin(t * 0.32) * 0.3, vx = Math.cos(t * 0.32);
