@@ -11,6 +11,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;700&family=Unbounded:wght@500&display=swap" rel="stylesheet">
 <script type="importmap">{"imports":{"three":"./vendor/three.module.min.js"}}</script>
 <script type="module" src="beast.js"></script>
+<script type="module" src="cloud.js"></script>
 <style>
 :root{
   --ink:#16202d; --ink2:#1e2b3c; --line:#2d3d53; --text:#e8eef8; --mute:#8b9ab0;
@@ -254,6 +255,7 @@ canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;displa
 
   <div class="ar" id="ar">
     <video id="arVideo" playsinline muted autoplay></video>
+    <canvas id="arGL"></canvas>
     <canvas id="arCv"></canvas>
     <div class="arTop">
       <div class="arPlace" id="arPlace"></div>
@@ -1259,6 +1261,12 @@ function buildIdol(){
 const PAPER={bg:[236,230,218], ink:[30,28,26], red:[228,70,34], blue:[36,88,255]};
 const INK={cam:document.createElement("canvas"), seed:new Float32Array(0), trail:[], tick:0};
 function inkSeed(n){ if(INK.seed.length<n){ INK.seed=new Float32Array(n); for(let i=0;i<n;i++) INK.seed[i]=Math.random(); } return INK.seed; }
+// the true 3D point cloud (cloud.js); the 2D traced guardian stands in until it is ready, or if WebGL fails
+function showCloud(g){
+  AR.cloud=false; AR.around0=null;
+  if(!window.CLOUD) return;
+  CLOUD.show($("arGL"), g).then(()=>{ if(AR.guard===g && AR.open) AR.cloud=true; }).catch(()=>{ AR.cloud=false; });
+}
 function showGuard(g){
   AR.modelReady=false;
   const key=BEAST.guards&&BEAST.guards[g];
@@ -1399,7 +1407,14 @@ function drawGlowPortal(c,W,H,t,dt,cx,cy,R,sol,far,appear,breathe){
   c.globalCompositeOperation="lighter";
   glowGround(c,W,H,t,hy,hd,appear,fade, guard==="idol" ? [255,200,120] : [190,214,255], guard==="idol" ? [255,240,190] : [255,214,140]);
   // sculpted model when it has loaded; the hand-made versions stand in until then (or offline)
-  if(guard==="giant" || AR.modelReady) glowModel(c,W,H,t,dt,cx,cy,R,sol,far,hy,guard);
+  if(AR.cloud){
+    const gg=golds[AR.gi], yaw = (heading!=null && AR.anchor!=null) ? (((heading-AR.anchor+540)%360)-180)*Math.PI/180 : 0;
+    let around=0;
+    if(player && gg){ const b=Math.atan2(player.x-gg.x, -(player.y-gg.y)); if(AR.around0==null) AR.around0=b; around=-(((b-AR.around0+Math.PI*3)%(Math.PI*2))-Math.PI); }
+    const dist = (player && gg) ? Math.hypot(gg.x-player.x, gg.y-player.y) : 0;
+    if(!CLOUD.frame({W,H,dpr:Math.min(DPR,2),t,yaw,pitch:pitch??80,focus:AR.focus,sol,around,far,dist})) AR.cloud=false;
+  }
+  else if(guard==="giant" || AR.modelReady) glowModel(c,W,H,t,dt,cx,cy,R,sol,far,hy,guard);
   else if(guard==="sun") glowSun(c,W,H,t,cx,cy,R,sol,far,appear,breathe,fade);
   else glowIdol(c,W,H,t,cx,cy,R,sol,far);
   // sparks shed by the guardian drift up and fade
@@ -1571,7 +1586,7 @@ async function openAR(i, mode){
   AR.beastName=""; INK.trail=[]; INK.last=null; INK.lastT=0; GLOW.last=null; GLOW.lastT=0; GLOW.shed=[];
   $("ar").classList.toggle("paper", AR.paper); $("ar").classList.toggle("glow", AR.glow);
   // three guardians in the light style: the sun, the giant, the idol (only the giant needs the 3D module)
-  if(AR.glow){ const bk=beastKindFor(i); AR.guard=bk.guard; AR.beastId=bk.id; showGuard(bk.guard); }
+  if(AR.glow){ const bk=beastKindFor(i); AR.guard=bk.guard; AR.beastId=bk.id; showGuard(bk.guard); showCloud(bk.guard); }
   else if(AR.paper){ const bk=beastKindFor(i); AR.beastId=bk.id; BEAST.show(bk.kind).then(n=>{ AR.beastName=n; }).catch(()=>{ AR.paper=AR.glow=false; $("ar").classList.remove("paper","glow"); }); }
   $("ar").classList.toggle("far", AR.mode==="far");
   $("arFocus").textContent = AR.mode==="far" ? "" : "Смотри на портал — он проявляется от твоего внимания";
@@ -1596,7 +1611,7 @@ async function openAR(i, mode){
   requestAnimationFrame(arFrame);
 }
 function closeAR(){
-  AR.open=false; $("ar").classList.remove("open");
+  AR.open=false; AR.cloud=false; if(window.CLOUD) CLOUD.clear(); $("ar").classList.remove("open");
   if(AR.stream){ AR.stream.getTracks().forEach(t=>t.stop()); AR.stream=null; }
   $("arVideo").srcObject=null;
 }
@@ -2707,7 +2722,7 @@ function sndUpdate(){
 document.addEventListener("pointerdown", sndInit, {passive:true});
 setInterval(sndUpdate, 120);
 window.__openAR=(i,m)=>openAR(i,m); window.__golds=()=>golds.map(g=>g.type);
-window.__focus=v=>{AR.focus=v;}; window.__guard=g=>{AR.guard=g; showGuard(g);}; window.__ready=()=>AR.modelReady; window.__ar=()=>({focus:AR.focus, ox:AR.ox, oy:AR.oy, paper:AR.paper, name:AR.beastName, W:AR.W, H:AR.H});
+window.__focus=v=>{AR.focus=v;}; window.__guard=g=>{AR.guard=g; showGuard(g); showCloud(g);}; window.__ready=()=>AR.modelReady; window.__cloud=()=>AR.cloud; window.__ar=()=>({focus:AR.focus, ox:AR.ox, oy:AR.oy, paper:AR.paper, name:AR.beastName, W:AR.W, H:AR.H});
 window.__snd=()=>({ctx:!!SND.ctx, state:SND.ctx&&SND.ctx.state, level:+SND.level.toFixed(3), f0:SND.f0, on:SND.on});
 { const lbl=()=>{ $("arStyleBtn").textContent = (store.get("iskin.arStyle")||"glow")==="paper" ? "Стиль порталов: бумага" : "Стиль порталов: свет"; }; lbl();
   $("arStyleBtn").onclick=()=>{ store.set("iskin.arStyle", (store.get("iskin.arStyle")||"glow")==="paper" ? "glow" : "paper"); lbl(); }; }
