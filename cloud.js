@@ -85,26 +85,17 @@ function build(kind) {
     for (let i = 0; i < V; i++) { const x = P[i*3], y = P[i*3+1], z = P[i*3+2]; mnx = Math.min(mnx, x); mxx = Math.max(mxx, x); mny = Math.min(mny, y); mxy = Math.max(mxy, y); mnz = Math.min(mnz, z); mxz = Math.max(mxz, z); }
     const S = G.height / (mxy - mny), cx = (mnx + mxx) / 2, cz = (mnz + mxz) / 2;
     for (let i = 0; i < V; i++) { P[i*3] = (P[i*3] - cx) * S; P[i*3+1] = (P[i*3+1] - mny) * S + (G.lift || 0); P[i*3+2] = (P[i*3+2] - cz) * S; }
-    // curvature: how far a vertex sits below the average of its neighbours (along its normal) → grooves
-    const sum = new Float32Array(V * 3), cnt = new Uint16Array(V);
-    for (let t = 0; t < I.length; t += 3) for (let e = 0; e < 3; e++) {
-      const a = I[t+e], b = I[t+(e+1)%3];
-      sum[a*3] += P[b*3]; sum[a*3+1] += P[b*3+1]; sum[a*3+2] += P[b*3+2]; cnt[a]++;
-      sum[b*3] += P[a*3]; sum[b*3+1] += P[a*3+1]; sum[b*3+2] += P[a*3+2]; cnt[b]++;
-    }
-    let cav = new Float32Array(V), edge = 0;
-    for (let i = 0; i < V; i++) {
-      if (!cnt[i]) continue;
-      const ax = sum[i*3]/cnt[i] - P[i*3], ay = sum[i*3+1]/cnt[i] - P[i*3+1], az = sum[i*3+2]/cnt[i] - P[i*3+2];
-      cav[i] = ax*Nn[i*3] + ay*Nn[i*3+1] + az*Nn[i*3+2]; edge += Math.hypot(ax, ay, az);
-    }
-    edge /= V;
-    // smooth once, then express as "grooveness" 0..1 relative to the mesh's typical edge length
-    const cav2 = new Float32Array(V);
-    for (let t = 0; t < I.length; t += 3) for (let e = 0; e < 3; e++) { const a = I[t+e], b = I[t+(e+1)%3]; cav2[a] += cav[b]; cav2[b] += cav[a]; }
-    for (let i = 0; i < V; i++) cav2[i] = cnt[i] ? 0.5*cav[i] + 0.5*cav2[i]/cnt[i] : 0;
+    // curvature: how far a vertex sits below the average of its neighbourhood (2 rings), along its normal.
+    // Carved grooves are concave, so they come out positive. Thresholds adapt to each sculpt (percentiles).
+    const nb = Array.from({ length: V }, () => []);
+    for (let t = 0; t < I.length; t += 3) for (let e = 0; e < 3; e++) { const a = I[t+e], b = I[t+(e+1)%3]; nb[a].push(b); nb[b].push(a); }
+    const avg = (src) => { const out = new Float32Array(V*3); for (let i = 0; i < V; i++) { const L = nb[i]; if (!L.length) { out.set(src.subarray(i*3, i*3+3), i*3); continue; } let x = 0, y = 0, z = 0; for (const j of L) { x += src[j*3]; y += src[j*3+1]; z += src[j*3+2]; } out[i*3] = x/L.length; out[i*3+1] = y/L.length; out[i*3+2] = z/L.length; } return out; };
+    const A2 = avg(avg(P));
+    const cav = new Float32Array(V);
+    for (let i = 0; i < V; i++) cav[i] = (A2[i*3]-P[i*3])*Nn[i*3] + (A2[i*3+1]-P[i*3+1])*Nn[i*3+1] + (A2[i*3+2]-P[i*3+2])*Nn[i*3+2];
+    const sorted = Float32Array.from(cav).sort(), p70 = sorted[Math.floor(V*0.72)], p97 = sorted[Math.floor(V*0.975)];
     const groove = new Float32Array(V);
-    for (let i = 0; i < V; i++) groove[i] = Math.min(1, Math.max(0, cav2[i] / (edge * 0.35) - 0.15));
+    for (let i = 0; i < V; i++) groove[i] = Math.min(1, Math.max(0, (cav[i] - p70) / Math.max(1e-6, p97 - p70)));
     // sample triangles by area, favouring grooves
     const T = I.length / 3, cum = new Float32Array(T); let tot = 0;
     for (let t = 0; t < T; t++) {
@@ -112,7 +103,7 @@ function build(kind) {
       const ux = P[b]-P[a], uy = P[b+1]-P[a+1], uz = P[b+2]-P[a+2], vx = P[c]-P[a], vy = P[c+1]-P[a+1], vz = P[c+2]-P[a+2];
       const area = 0.5 * Math.hypot(uy*vz-uz*vy, uz*vx-ux*vz, ux*vy-uy*vx);
       const g = (groove[I[t*3]] + groove[I[t*3+1]] + groove[I[t*3+2]]) / 3;
-      tot += area * (1 + 9 * g); cum[t] = tot;
+      tot += area * (1 + 30 * g * g); cum[t] = tot;
     }
     let seed = 7; const R = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
     const n = G.count, pos = new Float32Array(n*3), nor = new Float32Array(n*3), col = new Float32Array(n*3), siz = new Float32Array(n), sd = new Float32Array(n*4);
@@ -124,7 +115,7 @@ function build(kind) {
       let x = P[ia*3]*w + P[ib*3]*u + P[ic*3]*v, y = P[ia*3+1]*w + P[ib*3+1]*u + P[ic*3+1]*v, z = P[ia*3+2]*w + P[ib*3+2]*u + P[ic*3+2]*v;
       let nx = Nn[ia*3]*w + Nn[ib*3]*u + Nn[ic*3]*v, ny = Nn[ia*3+1]*w + Nn[ib*3+1]*u + Nn[ic*3+1]*v, nz = Nn[ia*3+2]*w + Nn[ib*3+2]*u + Nn[ic*3+2]*v;
       const nl = Math.hypot(nx, ny, nz) || 1; nx /= nl; ny /= nl; nz /= nl;
-      const g = groove[ia]*w + groove[ib]*u + groove[ic]*v, main = g > 0.35;
+      const g = groove[ia]*w + groove[ib]*u + groove[ic]*v, main = g > 0.45;
       // below the cut the figure crumbles: points slide down and spill outward over the ground, lying flat
       if (cut > 0 && y < cut && R() < Math.pow(1 - y / cut, 0.7)) {
         const f = 1 - y / cut, sp = 1 + f * (0.8 + R() * 1.6);
