@@ -42,7 +42,9 @@ void main(){
   vN = normalize(normalMatrix * aNormal);
   vColor = aColor;
   float tw = 0.7 + 0.3*sin(uTime*2.3 + aSeed.y*60.0);
-  vA = tw * (0.25+0.75*e) * (1.0 - clamp(uSol*0.9,0.0,1.0));
+  // points on the far side of the figure are hidden, so you see one clean skin, not both sides at once
+  float facing = smoothstep(-0.15, 0.2, vN.z);
+  vA = tw * (0.25+0.75*e) * (1.0 - clamp(uSol*0.9,0.0,1.0)) * mix(0.06, 1.0, max(facing, 1.0-e));
 }`;
 const FRAG = `
 precision mediump float;
@@ -146,7 +148,7 @@ function build(kind) {
     bg.setAttribute("aColor", new THREE.BufferAttribute(col, 3));
     bg.setAttribute("aSize", new THREE.BufferAttribute(siz, 1));
     bg.setAttribute("aSeed", new THREE.BufferAttribute(sd, 4));
-    const mat = new THREE.ShaderMaterial({ vertexShader: VERT, fragmentShader: FRAG, transparent: true, depthWrite: false,
+    const mat = new THREE.ShaderMaterial({ vertexShader: VERT, fragmentShader: FRAG, transparent: true, depthWrite: true,
       uniforms: { uTime: { value: 0 }, uFocus: { value: 0 }, uSol: { value: 0 }, uScale: { value: 800 } } });
     const pts = new THREE.Points(bg, mat); pts.frustumCulled = false;
     const holder = new THREE.Group(); holder.add(pts);
