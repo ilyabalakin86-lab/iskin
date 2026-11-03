@@ -1844,12 +1844,51 @@ function buildHelmetIdol(){
   return pts;
 }
 
+/* The battle idol from the sculpted 3D model: a still straight-on render, re-mapped onto the hit-zone
+   layout (dome, eyes, mouth, seam, body) so the fight works exactly as before.
+   Main lines (silhouette, deep grooves) get big points, secondary lines half-size points. */
+async function buildModelIdol(){
+  const f = await BEAST.still("g_idol"), N=f.size, d=f.data;
+  const A=(i,j)=>(i<0||j<0||i>=N||j>=N)?0:d[(j*N+i)*4+3], L=(i,j)=>(i<0||j<0||i>=N||j>=N)?0:d[(j*N+i)*4]/255;
+  let top=N, bot=0, lft=N, rgt=0;
+  for(let j=0;j<N;j++) for(let i=0;i<N;i++) if(A(i,j)>50){ if(j<top)top=j; if(j>bot)bot=j; if(i<lft)lft=i; if(i>rgt)rgt=i; }
+  if(bot-top<20) throw new Error("empty render");
+  // landmarks of the sculpt (fractions of its height) → the zone layout
+  const H0=bot-top, ys=[top, top+H0*0.21, top+H0*0.40, bot], yt=[12, 96, 132, 248];
+  const mapY=v=>{ for(let k=0;k<3;k++) if(v<=ys[k+1]||k===2){ const u=(v-ys[k])/(ys[k+1]-ys[k]); return yt[k]+u*(yt[k+1]-yt[k]); } };
+  const cxm=(lft+rgt)/2, sx=156/Math.max(1,rgt-lft);
+  const R=rng(41), pts=[];
+  for(let j=top;j<=bot;j++) for(let i=lft;i<=rgt;i++){
+    if(A(i,j)<50) continue;
+    const l=L(i,j), lap=l-(L(i+2,j)+L(i-2,j)+L(i,j+2)+L(i,j-2))/4;
+    const edge=A(i-2,j)<50||A(i+2,j)<50||A(i,j-2)<50||A(i,j+2)<50;
+    const main=edge||Math.abs(lap)>0.08||l<0.1, sec=!main&&Math.abs(lap)>0.035;
+    const keep = main ? 0.55 : sec ? 0.45 : 0.06;
+    if(R()>keep) continue;
+    const ix=100+(i+R()-cxm)*sx, iy=mapY(j+R());
+    const kind = main?2:sec?1:0;
+    pts.push({x:(ix-IW/2)/IH, y:(iy-IH/2)/IH, zone:idolZoneAt(ix,iy)||"body", kind, l:Math.max(0.35,l), z:0.04, ph:R()*6.283,
+      s: main?2.0:sec?1.0:0.7, off:0});
+  }
+  return pts;
+}
+function useModelIdol(){
+  if(B.modelPts!=null || !window.BEAST || !BEAST.still) return;
+  B.modelPts=false;                                   // loading
+  buildModelIdol().then(p=>{
+    B.modelPts=p;
+    if(!B.open || B.phase==="setup"){ B.pts=p; B.pts.forEach(q=>{ q.off=0; q.dead=0; q.vx=0; q.vy=0; }); }
+  }).catch(()=>{ B.modelPts=null; });
+}
+
 const B = {open:false};
 function bEl(id){ return document.getElementById(id); }
 
 function openBattle(gi, training){
   const g = gi!=null ? golds[gi] : null;
+  if(B.modelPts) B.pts = B.modelPts;
   if(!B.pts) B.pts = buildHelmetIdol();
+  useModelIdol();                                    // swap in the sculpted idol as soon as it is ready
   B.pts.forEach(p=>{ p.off=0; p.dead=0; p.vx=0; p.vy=0; });
   Object.assign(B, {
     open:true, gi, training:!!training, phase:"setup", turn:1, marks:[], fx:[], texts:[], bolts:[], dots:[],
