@@ -10,7 +10,7 @@ import { mergeVertices } from "./vendor/jsm/utils/BufferGeometryUtils.js";
 
 const GUARDS = {
   idol:  { url: "https://d8j0ntlcm91z4.cloudfront.net/user_3ANnAU4Au9rBJHD9BZOzXV4W1SZ/hf_20261102_203122_885bf255-54e6-48a8-a2a4-e4d9d742c0a8.glb",
-           height: 2.4, dist: 4.2, crumble: 0.30, count: 26000,
+           height: 2.4, dist: 4.6, crumble: 0.30, count: 22000,
            main: [0.24, 1.0, 0.35], body: [[0.24, 1.0, 0.35], [0.12, 0.85, 0.25], [0.1, 0.2, 0.85]], white: 0.02 },
   giant: { url: "https://d8j0ntlcm91z4.cloudfront.net/user_3ANnAU4Au9rBJHD9BZOzXV4W1SZ/hf_20261102_203121_60fece35-389d-47a3-932e-c1740cce7a9f.glb",
            height: 4.2, dist: 6.5, crumble: 0.22, count: 30000,
@@ -137,7 +137,7 @@ function build(kind) {
       else if (G.radial) { const d = Math.min(1, Math.hypot(x, y - H/2 - (G.lift||0)) / (H*0.5)); const a = G.body[0], b = d < 0.5 ? G.body[1] : G.body[2], q = d < 0.5 ? d*2 : (d-0.5)*2; c = d < 0.5 ? [a[0]+(b[0]-a[0])*q, a[1]+(b[1]-a[1])*q, a[2]+(b[2]-a[2])*q] : [G.body[1][0]+(b[0]-G.body[1][0])*q, G.body[1][1]+(b[1]-G.body[1][1])*q, G.body[1][2]+(b[2]-G.body[1][2])*q]; }
       else c = G.body[R() < 0.55 ? 0 : R() < 0.6 ? 1 : 2];
       col.set(c, k*3);
-      siz[k] = main ? 0.05 + R() * 0.02 : 0.022 + R() * 0.016;       // main lines: big points; the rest: half size
+      siz[k] = main ? 0.032 + R() * 0.012 : 0.015 + R() * 0.008;       // main lines: big points; the rest: half size
       sd.set([R(), R(), R(), R()], k*4);
     }
     const bg = new THREE.BufferGeometry();
@@ -177,7 +177,7 @@ function frame(s) {
   const D = s.far ? Math.max(G.dist * 2, Math.min(80, s.dist || 40)) : G.dist, big = s.far ? D / G.dist * 0.9 : 1;
   cur.holder.position.set(0, -1.55, -D);
   cur.holder.scale.setScalar(big);
-  cur.holder.rotation.y = (s.around || 0) + Math.sin(s.t * 0.25) * 0.08;
+  cur.holder.rotation.y = Math.PI + (s.around || 0) + Math.sin(s.t * 0.25) * 0.08;   // the sculpts face -Z: turn them to you
   camera.position.set(0, 0, 0);
   camera.rotation.set((s.pitch - 80) * Math.PI / 180 * 0.9, -s.yaw, 0);
   const m = cur.mat.uniforms;
