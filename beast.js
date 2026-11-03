@@ -169,6 +169,16 @@ function readBack() {
   return { data: px, size: SIZE };
 }
 
+/* A still, straight-on frame of a sculpted guardian (used to build the battle idol's points). */
+async function still(kind) {
+  await show(kind);
+  const K = KINDS[kind];
+  camera.position.set(0, 0, K.cam); camera.lookAt(0, 0, 0);
+  hemi.intensity = 0.7; sun.intensity = 4.2; sun.position.set(-1.2, 2.2, 2.4);
+  cur.pivot.rotation.set(0, 0, 0); cur.pivot.position.set(0, 0, 0);
+  renderer.render(scene, camera);
+  const out = readBack(); return { data: out.data.slice(), size: SIZE };
+}
 async function show(kind) {
   const b = await load(kind);
   if (cur && cur.pivot !== b.pivot) scene.remove(cur.pivot);
@@ -176,5 +186,5 @@ async function show(kind) {
   return b.name;
 }
 
-window.BEAST = { ready: true, kinds: Object.keys(KINDS).filter(k => !KINDS[k].giant && !KINDS[k].guard), guards: { giant: "g_giant", idol: "g_idol", sun: "g_sun" }, names: Object.fromEntries(Object.entries(KINDS).map(([k, v]) => [k, v.name])), load, show, frame, size: SIZE };
+window.BEAST = { ready: true, kinds: Object.keys(KINDS).filter(k => !KINDS[k].giant && !KINDS[k].guard), guards: { giant: "g_giant", idol: "g_idol", sun: "g_sun" }, names: Object.fromEntries(Object.entries(KINDS).map(([k, v]) => [k, v.name])), load, show, still, frame, size: SIZE };
 window.dispatchEvent(new Event("beast-ready"));

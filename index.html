@@ -1486,7 +1486,8 @@ function glowModel(c,W,H,t,dt,cx,cy,R,sol,far,hy,guard){
     x=(W/2+AR.ox+(sd[k+7]-.5)*W*1.1)*(1-e)+x*e; y=(H*0.42+AR.oy+(sd[k+11]-.5)*H*0.9)*(1-e)+y*e;
     if(sol){ const ph=sd[k+3]*6.283, kk=Math.min(1,sol/0.8); x+=Math.cos(ph)*kk*R*0.5*sd[k+5]; y+=Math.sin(ph)*kk*R*0.5*sd[k+5];
       if(sol>0.8){ const m=Math.min(1,(sol-0.8)/0.9), q=m*m; x+=(W/2-x)*q; y+=(H+40-y)*q; } }
-    (edge||seam?rim:body).push(x,y,e,k + (Math.hypot(i/N-0.5,j/N-0.5)*2)/4);   // fractional part carries the distance from centre
+    const main = edge || Math.abs(lap)>0.08 || l<0.1;          // main lines: silhouette, deep grooves, strong folds
+    (edge||seam?rim:body).push(x,y,e*(main?1:-1),k + (Math.hypot(i/N-0.5,j/N-0.5)*2)/4);   // sign of e marks main vs secondary   // fractional part carries the distance from centre
   }
   // palettes: the giant is blue-white; the idol warm gold with iridescent seams; the sun red at the core, blue-white at the tips
   const pal=(n,isRim,tw)=>{ const d=(n%1)*4;
@@ -1498,8 +1499,9 @@ function glowModel(c,W,H,t,dt,cx,cy,R,sol,far,hy,guard){
   c.fillStyle = guard==="sun" ? `rgba(255,90,50,${0.10*gf})` : guard==="idol" ? `rgba(255,190,110,${0.08*gf})` : `rgba(70,120,255,${0.12*gf})`;
   for(let n=0;n<body.length;n+=8) c.fillRect(body[n]-4,body[n+1]-4,8,8);
   for(let n=0;n<rim.length;n+=4) c.fillRect(rim[n]-2.5,rim[n+1]-2.5,5,5);
-  for(let n=0;n<body.length;n+=4){ const tw=0.5+0.5*Math.sin(t*3+body[n+3]); c.fillStyle=`rgba(${pal(body[n+3],false)},${(0.45+0.5*tw)*gf*(0.3+0.7*body[n+2])})`; c.fillRect(body[n]-0.8,body[n+1]-0.8,1.6,1.6); }
-  for(let n=0;n<rim.length;n+=4){ const tw=0.6+0.4*Math.sin(t*4+rim[n+3]); c.fillStyle=`rgba(${pal(rim[n+3],true)},${tw*gf*(0.3+0.7*rim[n+2])})`; c.fillRect(rim[n]-1,rim[n+1]-1,2,2); }
+  for(let n=0;n<body.length;n+=4){ const tw=0.5+0.5*Math.sin(t*3+body[n+3]); c.fillStyle=`rgba(${pal(body[n+3],false)},${(0.45+0.5*tw)*gf*(0.3+0.7*Math.abs(body[n+2]))})`; c.fillRect(body[n]-0.7,body[n+1]-0.7,1.4,1.4); }
+  // main lines in big points, secondary lines in points half the size
+  for(let n=0;n<rim.length;n+=4){ const tw=0.6+0.4*Math.sin(t*4+rim[n+3]), mn=rim[n+2]>=0, e=Math.abs(rim[n+2]), h=mn?1.6:0.8; c.fillStyle=`rgba(${pal(rim[n+3],true)},${tw*gf*(0.3+0.7*e)*(mn?1:0.85)})`; c.fillRect(rim[n]-h,rim[n+1]-h,h*2,h*2); }
   for(let n=0;n<rim.length;n+=4){ const q=rim[n+3]; if((n>>2)%37===0 && Math.sin(t*1.7+q*0.37)>0.97) star4(c,rim[n],rim[n+1],6,gf,[180,210,255]); }
   for(let n=0;n<body.length;n+=4){ const q=body[n+3]; if((n>>2)%53===0 && Math.sin(t*1.3+q*0.53)>0.98) star4(c,body[n],body[n+1],5,gf,[190,215,255]); }
   if(!sol && rim.length && AR.focus>0.6) for(let s=0;s<3;s++){ const n=4*Math.floor(Math.random()*rim.length/4); GLOW.shed.push({x:rim[n],y:rim[n+1],vx:(Math.random()-.5)*14,vy:-10-Math.random()*22,life:1}); }
