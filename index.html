@@ -96,7 +96,7 @@ canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;displa
 .ar.paper input{background:#fff;color:#1e1c1a;border-color:rgba(30,28,26,.25)}
 .ar.paper .msg{color:rgba(30,28,26,.6)}
 .edit-on{color:var(--au)!important;border-color:var(--au)!important}
-.battle{position:absolute;inset:0;z-index:9;display:none;background:#0c1220;overflow:hidden}
+.battle{position:absolute;inset:0;z-index:9;display:none;background:linear-gradient(#0c1220,#1a1710);overflow:hidden}
 .battle.open{display:block}
 .battle canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none}
 .bTop{position:absolute;left:0;right:0;top:0;display:flex;align-items:center;gap:10px;padding:14px;padding-top:calc(14px + env(safe-area-inset-top,0px))}
@@ -275,6 +275,7 @@ canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;displa
   </div>
 
   <div class="battle" id="battle" data-phase="setup">
+    <canvas id="bGL"></canvas>
     <canvas id="bCv"></canvas>
     <div class="bTop">
       <div class="bTitle" id="bTitle"></div><div class="spacer"></div>
@@ -1905,6 +1906,7 @@ function openBattle(gi, training){
   if(B.modelPts) B.pts = B.modelPts;
   if(!B.pts) B.pts = buildHelmetIdol();
   useModelIdol();                                    // swap in the sculpted idol as soon as it is ready
+  B.cloud=false; if(window.CLOUD) CLOUD.show(bEl("bGL"),"idol").then(()=>{ if(B.open) B.cloud=true; }).catch(()=>{});
   B.pts.forEach(p=>{ p.off=0; p.dead=0; p.vx=0; p.vy=0; });
   Object.assign(B, {
     open:true, gi, training:!!training, phase:"setup", turn:1, marks:[], fx:[], texts:[], bolts:[], dots:[],
@@ -1924,7 +1926,7 @@ function openBattle(gi, training){
   bResize(); bRenderUI();
   requestAnimationFrame(bFrame);
 }
-function closeBattle(){ B.open=false; bEl("battle").classList.remove("open"); updateHUD(); save(); }
+function closeBattle(){ B.open=false; B.cloud=false; if(window.CLOUD) CLOUD.clear(); bEl("battle").classList.remove("open"); updateHUD(); save(); }
 function bResize(){ const c=bEl("bCv"); B.cv=c; B.ctx=c.getContext("2d"); B.W=c.clientWidth; B.H=c.clientHeight; c.width=B.W*DPR; c.height=B.H*DPR; }
 window.addEventListener("resize", ()=>{ if(B.open) bResize(); });
 
@@ -2117,8 +2119,8 @@ function bFrame(now){
   const c=B.ctx, W=B.W, H=B.H, t=(now-B.t0)/1000;
   c.setTransform(DPR,0,0,DPR,0,0);
   // night sky and hills drawn as golden dotted contours, like the references
-  const sky=c.createLinearGradient(0,0,0,H); sky.addColorStop(0,"#0c1220"); sky.addColorStop(1,"#1a1710");
-  c.fillStyle=sky; c.fillRect(0,0,W,H);
+  // the sky is the page background, so the 3D idol (drawn on the canvas below this one) shows through
+  c.clearRect(0,0,W,H);
   for(let i=0;i<14;i++){
     const y0=H*0.48+i*H*0.04, amp=18+i*3;
     c.fillStyle=`rgba(255,196,110,${0.10+i*0.018})`;
@@ -2139,7 +2141,10 @@ function bFrame(now){
   const G=idolGeom(), fs=G.hgt, sway=reduced?0:Math.sin(t*0.5)*0.03;
   c.globalCompositeOperation="lighter";
   const be=blindEyes();
+  // the idol itself: the 3D point cloud, pinned so its eyes and mouth sit on the hit zones
+  if(B.cloud && !CLOUD.battle({W,H,dpr:Math.min(DPR,2),t,eye:[fromIdol(100,96)[0]+shx,fromIdol(100,96)[1]+shy],mouth:[fromIdol(100,132)[0]+shx,fromIdol(100,132)[1]+shy]})) B.cloud=false;
   for(const p of B.pts){
+    if(B.cloud && !p.dead) continue;              // with the 3D idol, only the knocked-off pieces are drawn here
     let x=G.cx+shx+(p.x+sway*p.y)*fs, y=G.cy+shy+p.y*fs, a;
     if(p.dead){
       p.off+=1; x+= p.vx*p.off*1.4; y+= p.vy*p.off*1.4 + 0.02*p.off*p.off;

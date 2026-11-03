@@ -26,7 +26,7 @@ const loader = new GLTFLoader();
 
 const VERT = `
 attribute vec3 aNormal; attribute vec3 aColor; attribute float aSize; attribute vec4 aSeed;
-uniform float uTime, uFocus, uSol, uScale;
+uniform float uTime, uFocus, uSol, uScale, uOrtho;
 varying vec3 vColor; varying vec3 vN; varying float vA;
 void main(){
   // condensation: each point starts as a spore somewhere around and settles onto the surface as you keep looking
@@ -38,7 +38,7 @@ void main(){
   p += (aNormal*1.6 + (aSeed.xyz-0.5)*2.0) * uSol*uSol;
   vec4 mv = modelViewMatrix * vec4(p,1.0);
   gl_Position = projectionMatrix * mv;
-  gl_PointSize = aSize * uScale / -mv.z * (0.35+0.65*e);
+  gl_PointSize = aSize * (uOrtho > 0.5 ? uScale : uScale / -mv.z) * (0.35+0.65*e);
   vN = normalize(normalMatrix * aNormal);
   vColor = aColor;
   float tw = 0.7 + 0.3*sin(uTime*2.3 + aSeed.y*60.0);
@@ -60,14 +60,13 @@ void main(){
   gl_FragColor = vec4(vColor, vA * (1.0 - smoothstep(0.75,1.0,r)*0.5));
 }`;
 
+const renderers = new Map();          // one WebGL context per canvas (portal view, battle), made once
 function ensure(canvas) {
-  if (renderer && renderer.domElement === canvas) return;
-  renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, premultipliedAlpha: false });
-  renderer.setClearColor(0x000000, 0);
-  scene = new THREE.Scene();
-  camera = new THREE.PerspectiveCamera(58, 1, 0.05, 200);
-  camera.rotation.order = "YXZ";
+  if (!scene) { scene = new THREE.Scene(); camera = new THREE.PerspectiveCamera(58, 1, 0.05, 200); camera.rotation.order = "YXZ"; }
+  if (!renderers.has(canvas)) { const r = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, premultipliedAlpha: false }); r.setClearColor(0x000000, 0); renderers.set(canvas, r); }
+  renderer = renderers.get(canvas);
 }
+function fit(r, W, H, dpr) { if (r._w !== W || r._h !== H || r._d !== dpr) { r.setPixelRatio(dpr); r.setSize(W, H, false); r._w = W; r._h = H; r._d = dpr; } }
 
 /* Build the cloud once per guardian: merge the mesh, measure curvature per vertex, then sample the surface. */
 function build(kind) {
@@ -140,7 +139,7 @@ function build(kind) {
     bg.setAttribute("aSize", new THREE.BufferAttribute(siz, 1));
     bg.setAttribute("aSeed", new THREE.BufferAttribute(sd, 4));
     const mat = new THREE.ShaderMaterial({ vertexShader: VERT, fragmentShader: FRAG, transparent: true, depthWrite: true,
-      uniforms: { uTime: { value: 0 }, uFocus: { value: 0 }, uSol: { value: 0 }, uScale: { value: 800 } } });
+      uniforms: { uTime: { value: 0 }, uFocus: { value: 0 }, uSol: { value: 0 }, uScale: { value: 800 }, uOrtho: { value: 0 } } });
     const pts = new THREE.Points(bg, mat); pts.frustumCulled = false;
     const holder = new THREE.Group(); holder.add(pts);
     res({ kind, holder, mat, G });
@@ -161,11 +160,9 @@ async function show(canvas, kind) {
 function frame(s) {
   if (!cur || !renderer) return false;
   const G = cur.G;
-  if (renderer._w !== s.W || renderer._h !== s.H || renderer._d !== s.dpr) {
-    renderer.setPixelRatio(s.dpr); renderer.setSize(s.W, s.H, false);
-    renderer._w = s.W; renderer._h = s.H; renderer._d = s.dpr;
-    camera.aspect = s.W / s.H; camera.updateProjectionMatrix();
-  }
+  fit(renderer, s.W, s.H, s.dpr);
+  if (camera.aspect !== s.W / s.H) { camera.aspect = s.W / s.H; camera.updateProjectionMatrix(); }
+  cur.mat.uniforms.uOrtho.value = 0;
   // the guardian stands in the world, D metres ahead of where you first saw it; far ones loom on the horizon
   const D = s.far ? Math.max(G.dist * 2, Math.min(80, s.dist || 40)) : G.dist, big = s.far ? D / G.dist * 0.9 : 1;
   cur.holder.position.set(0, -1.55, -D);
@@ -181,5 +178,26 @@ function frame(s) {
 }
 function clear() { if (renderer) renderer.clear(); }
 
-window.CLOUD = { kinds: Object.keys(GUARDS), show, frame, clear };
+/* The battle: the same cloud, drawn flat-on (orthographic) and pinned so the sculpt's eye line and mouth land
+   exactly where the hit zones are. s = {W,H,dpr,t, eye:[x,y], mouth:[x,y] in screen px, hit 0..1 flash} */
+const ortho = new THREE.OrthographicCamera(0, 1, 0, -1, -5000, 5000);
+const EYE_F = 0.79, MOUTH_F = 0.60;               // eye line and mouth as fractions of the sculpt's height (from the base)
+function battle(s) {
+  if (!cur || !renderer) return false;
+  const G = cur.G;
+  fit(renderer, s.W, s.H, s.dpr);
+  ortho.left = 0; ortho.right = s.W; ortho.top = 0; ortho.bottom = -s.H; ortho.updateProjectionMatrix();
+  const k = (s.mouth[1] - s.eye[1]) / (G.height * (EYE_F - MOUTH_F));   // pixels per metre
+  const base = (G.lift || 0);
+  cur.holder.position.set(s.eye[0], -s.eye[1] - (G.height * EYE_F + base) * k, 0);
+  cur.holder.scale.setScalar(k);
+  cur.holder.rotation.y = (G.face ?? Math.PI) + Math.sin(s.t * 0.4) * 0.12;
+  const m = cur.mat.uniforms;
+  m.uTime.value = s.t; m.uFocus.value = 1; m.uSol.value = s.sol || 0; m.uOrtho.value = 1;
+  m.uScale.value = k * s.dpr * 1.1;
+  renderer.render(scene, ortho);
+  return true;
+}
+
+window.CLOUD = { kinds: Object.keys(GUARDS), show, frame, clear, battle };
 window.dispatchEvent(new Event("cloud-ready"));
