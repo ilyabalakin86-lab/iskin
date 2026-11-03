@@ -10,7 +10,7 @@ import { mergeVertices } from "./vendor/jsm/utils/BufferGeometryUtils.js";
 
 const GUARDS = {
   idol:  { url: "https://d8j0ntlcm91z4.cloudfront.net/user_3ANnAU4Au9rBJHD9BZOzXV4W1SZ/hf_20261102_203122_885bf255-54e6-48a8-a2a4-e4d9d742c0a8.glb",
-           height: 2.4, dist: 4.6, crumble: 0.30, count: 22000,
+           height: 2.4, dist: 4.6, crumble: 0.30, count: 22000, face: 0,
            main: [0.24, 1.0, 0.35], body: [[0.24, 1.0, 0.35], [0.12, 0.85, 0.25], [0.1, 0.2, 0.85]], white: 0.02 },
   giant: { url: "https://d8j0ntlcm91z4.cloudfront.net/user_3ANnAU4Au9rBJHD9BZOzXV4W1SZ/hf_20261102_203121_60fece35-389d-47a3-932e-c1740cce7a9f.glb",
            height: 4.2, dist: 6.5, crumble: 0.22, count: 30000,
@@ -179,7 +179,7 @@ function frame(s) {
   const D = s.far ? Math.max(G.dist * 2, Math.min(80, s.dist || 40)) : G.dist, big = s.far ? D / G.dist * 0.9 : 1;
   cur.holder.position.set(0, -1.55, -D);
   cur.holder.scale.setScalar(big);
-  cur.holder.rotation.y = Math.PI + (s.around || 0) + Math.sin(s.t * 0.25) * 0.08;   // the sculpts face -Z: turn them to you
+  cur.holder.rotation.y = (G.face ?? Math.PI) + (s.around || 0) + Math.sin(s.t * 0.25) * 0.08;   // turn each sculpt's face to you
   camera.position.set(0, 0, 0);
   camera.rotation.set((s.pitch - 80) * Math.PI / 180 * 0.9, -s.yaw, 0);
   const m = cur.mat.uniforms;
